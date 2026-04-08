@@ -1,0 +1,1092 @@
+package htmlbag
+
+import (
+	"bytes"
+	"encoding/xml"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/boxesandglue/boxesandglue/backend/bag"
+	"github.com/boxesandglue/boxesandglue/backend/color"
+	"github.com/boxesandglue/boxesandglue/backend/document"
+	"github.com/boxesandglue/boxesandglue/backend/node"
+	"github.com/boxesandglue/boxesandglue/frontend"
+	"github.com/boxesandglue/svgreader"
+	"golang.org/x/net/html"
+)
+
+var (
+	tenpt    = bag.MustSP("10pt")
+	tenptflt = bag.MustSP("10pt").ToPT()
+)
+
+// ParseVerticalAlign parses the input ("top","middle",...) and returns the
+// VerticalAlignment value.
+func ParseVerticalAlign(align string, styles *FormattingStyles) frontend.VerticalAlignment {
+	switch align {
+	case "top":
+		return frontend.VAlignTop
+	case "middle":
+		return frontend.VAlignMiddle
+	case "bottom":
+		return frontend.VAlignBottom
+	case "inherit":
+		return styles.Valign
+	default:
+		return styles.Valign
+	}
+}
+
+// ParseHorizontalAlign parses the input ("left","center") and returns the
+// HorizontalAlignment value.
+func ParseHorizontalAlign(align string, styles *FormattingStyles) frontend.HorizontalAlignment {
+	switch align {
+	case "left", "start":
+		return frontend.HAlignLeft
+	case "center":
+		return frontend.HAlignCenter
+	case "right", "end":
+		return frontend.HAlignRight
+	case "justify":
+		return frontend.HAlignJustified
+	case "inherit":
+		return styles.Halign
+	default:
+		return styles.Halign
+	}
+}
+
+// ParseRelativeSize converts the string fs to a scaled point. This can be an
+// absolute size like 12pt but also a size like 1.2 or 2em. The provided dflt is
+// the source size. The root is the document's default value.
+func ParseRelativeSize(fs string, cur bag.ScaledPoint, root bag.ScaledPoint) bag.ScaledPoint {
+	if p, ok := strings.CutSuffix(fs, "%"); ok {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			panic(err)
+		}
+		ret := bag.MultiplyFloat(cur, f/100)
+		return ret
+	}
+	if prefix, ok := strings.CutSuffix(fs, "rem"); ok {
+		if root == 0 {
+			// logger.Warn("Calculating an rem size without a root font size results in a size of 0.")
+			return 0
+		}
+		factor, err := strconv.ParseFloat(prefix, 32)
+		if err != nil {
+			// logger.Error(fmt.Sprintf("Cannot convert relative size %s", fs))
+			return bag.MustSP("10pt")
+		}
+		return bag.ScaledPoint(float64(root) * factor)
+	}
+	if prefix, ok := strings.CutSuffix(fs, "em"); ok {
+		if cur == 0 {
+			// logger.Warn("Calculating an em size without a body font size results in a size of 0.")
+			return 0
+		}
+		factor, err := strconv.ParseFloat(prefix, 32)
+		if err != nil {
+			// logger.Error(fmt.Sprintf("Cannot convert relative size %s", fs))
+			return bag.MustSP("10pt")
+		}
+		return bag.ScaledPoint(float64(cur) * factor)
+	}
+	if unit, err := bag.SP(fs); err == nil {
+		return unit
+	}
+	if factor, err := strconv.ParseFloat(fs, 64); err == nil {
+		return bag.ScaledPointFromFloat(cur.ToPT() * factor)
+	}
+	switch fs {
+	case "larger":
+		return bag.ScaledPointFromFloat(cur.ToPT() * 1.2)
+	case "smaller":
+		return bag.ScaledPointFromFloat(cur.ToPT() / 1.2)
+	case "xx-small":
+		return bag.ScaledPointFromFloat(tenptflt / 1.2 / 1.2 / 1.2)
+	case "x-small":
+		return bag.ScaledPointFromFloat(tenptflt / 1.2 / 1.2)
+	case "small":
+		return bag.ScaledPointFromFloat(tenptflt / 1.2)
+	case "medium":
+		return tenpt
+	case "large":
+		return bag.ScaledPointFromFloat(tenptflt * 1.2)
+	case "x-large":
+		return bag.ScaledPointFromFloat(tenptflt * 1.2 * 1.2)
+	case "xx-large":
+		return bag.ScaledPointFromFloat(tenptflt * 1.2 * 1.2 * 1.2)
+	case "xxx-large":
+		return bag.ScaledPointFromFloat(tenptflt * 1.2 * 1.2 * 1.2 * 1.2)
+	}
+	// logger.Error(fmt.Sprintf("Could not convert %s from default %s", fs, cur))
+	return cur
+}
+
+// StylesToStyles updates the inheritable formattingStyles from the attributes
+// (of the current HTML element).
+func StylesToStyles(ih *FormattingStyles, attributes map[string]string, df *frontend.Document, curFontSize bag.ScaledPoint) error {
+	// Resolve font size first, since some of the attributes depend on the
+	// current font size.
+	if v, ok := attributes["font-size"]; ok {
+		ih.Fontsize = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+	}
+	for k, v := range attributes {
+		switch k {
+		case "font-size":
+			// already set
+		case "hyphens":
+			// ignore for now
+		case "display":
+			ih.Hide = (v == "none")
+		case "background-color":
+			ih.BackgroundColor = df.GetColor(v)
+		case "border-right-width", "border-left-width", "border-top-width", "border-bottom-width":
+			size := ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			switch k {
+			case "border-right-width":
+				ih.BorderRightWidth = size
+			case "border-left-width":
+				ih.BorderLeftWidth = size
+			case "border-top-width":
+				ih.BorderTopWidth = size
+			case "border-bottom-width":
+				ih.BorderBottomWidth = size
+			}
+		case "border-top-right-radius", "border-top-left-radius", "border-bottom-right-radius", "border-bottom-left-radius":
+			size := ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			switch k {
+			case "border-top-right-radius":
+				ih.BorderTopRightRadius = size
+			case "border-top-left-radius":
+				ih.BorderTopLeftRadius = size
+			case "border-bottom-left-radius":
+				ih.BorderBottomLeftRadius = size
+			case "border-bottom-right-radius":
+				ih.BorderBottomRightRadius = size
+			}
+		case "border-right-style", "border-left-style", "border-top-style", "border-bottom-style":
+			var sty frontend.BorderStyle
+			switch v {
+			case "none":
+				// default
+			case "solid":
+				sty = frontend.BorderStyleSolid
+			default:
+				// logger.Error(fmt.Sprintf("not implemented: border style %q", v))
+			}
+			switch k {
+			case "border-right-style":
+				ih.BorderRightStyle = sty
+			case "border-left-style":
+				ih.BorderLeftStyle = sty
+			case "border-top-style":
+				ih.BorderTopStyle = sty
+			case "border-bottom-style":
+				ih.BorderBottomStyle = sty
+			}
+
+		case "border-right-color":
+			ih.BorderRightColor = df.GetColor(v)
+		case "border-left-color":
+			ih.BorderLeftColor = df.GetColor(v)
+		case "border-top-color":
+			ih.BorderTopColor = df.GetColor(v)
+		case "border-bottom-color":
+			ih.BorderBottomColor = df.GetColor(v)
+		case "border-spacing":
+			// ignore
+		case "color":
+			ih.color = df.GetColor(v)
+		case "content":
+			// Check for leader() function: leader('.') or leader(".")
+			if strings.HasPrefix(v, "leader(") && strings.HasSuffix(v, ")") {
+				inner := v[7 : len(v)-1]
+				inner = strings.TrimSpace(inner)
+				inner = strings.Trim(inner, "'\"")
+				if inner != "" {
+					ih.leaderContent = inner
+				}
+			}
+		case "font-style":
+			switch v {
+			case "italic":
+				ih.fontstyle = frontend.FontStyleItalic
+			case "normal":
+				ih.fontstyle = frontend.FontStyleNormal
+			}
+		case "font-weight":
+			ih.Fontweight = frontend.ResolveFontWeight(v, ih.Fontweight)
+		case "font-feature-settings":
+			ih.fontfeatures = append(ih.fontfeatures, v)
+		case "font-variation-settings":
+			// Parse CSS syntax: "wght" 700, "wdth" 100
+			if ih.variationSettings == nil {
+				ih.variationSettings = make(map[string]float64)
+			}
+			for _, pair := range strings.Split(v, ",") {
+				pair = strings.TrimSpace(pair)
+				parts := strings.Fields(pair)
+				if len(parts) >= 2 {
+					// Remove quotes from axis tag
+					tag := strings.Trim(parts[0], `"'`)
+					if val, err := strconv.ParseFloat(parts[1], 64); err == nil {
+						ih.variationSettings[tag] = val
+					}
+				}
+			}
+		case "list-style-type":
+			ih.ListStyleType = v
+		case "font-family":
+			v = strings.Trim(v, `"`)
+			ih.fontfamily = df.FindFontFamily(v)
+			if ih.fontfamily == nil {
+				bag.Logger.Error("Font family not found, reverting to 'serif'", "requested family", v)
+				ih.fontfamily = df.FindFontFamily("serif")
+			}
+		case "hanging-punctuation":
+			switch v {
+			case "allow-end":
+				ih.hangingPunctuation = frontend.HangingPunctuationAllowEnd
+			}
+		case "letter-spacing":
+			if v != "normal" {
+				ih.letterSpacing = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			}
+		case "line-height":
+			if v == "normal" {
+				ih.lineheight = 0
+				ih.lineheightFactor = 1.2
+			} else if factor, err := strconv.ParseFloat(v, 64); err == nil {
+				// Unitless value like "1.5" — store as factor, inherit per element
+				ih.lineheight = 0
+				ih.lineheightFactor = factor
+			} else {
+				// Absolute value like "18pt", "1.5em", "150%"
+				ih.lineheight = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+				ih.lineheightFactor = 0
+			}
+		case "margin-bottom":
+			ih.marginBottom = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "margin-left":
+			ih.marginLeft = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "margin-right":
+			ih.marginRight = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "margin-top":
+			ih.marginTop = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "page-break-after", "break-after":
+			ih.pageBreakAfter = v
+		case "page-break-before", "break-before":
+			ih.pageBreakBefore = v
+		case "padding-inline-start":
+			ih.paddingInlineStart = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "padding-bottom":
+			ih.PaddingBottom = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "padding-left":
+			ih.PaddingLeft = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "padding-right":
+			ih.PaddingRight = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "padding-top":
+			ih.PaddingTop = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "tab-size":
+			if ts, err := strconv.Atoi(v); err == nil {
+				ih.tabsizeSpaces = ts
+			} else {
+				ih.tabsize = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			}
+		case "text-align":
+			ih.Halign = ParseHorizontalAlign(v, ih)
+		case "border-collapse":
+			// handled by table builder
+		case "text-decoration-style":
+			// not yet implemented
+		case "text-decoration-line":
+			switch v {
+			case "underline":
+				ih.TextDecorationLine = frontend.TextDecorationUnderline
+			}
+		case "text-indent":
+			ih.indent = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			ih.indentRows = 1
+		case "user-select":
+			// ignore
+		case "vertical-align":
+			switch v {
+			case "sub":
+				ih.yoffset = -1 * ih.Fontsize * 1000 / 5000
+			case "super":
+				ih.yoffset = ih.Fontsize * 1000 / 5000
+			case "top":
+				ih.Valign = frontend.VAlignTop
+			case "middle":
+				ih.Valign = frontend.VAlignMiddle
+			case "bottom":
+				ih.Valign = frontend.VAlignBottom
+			}
+		case "width":
+			ih.width = v
+		case "white-space":
+			ih.preserveWhitespace = (v == "pre")
+		case "-bag-font-expansion":
+			if strings.HasSuffix(v, "%") {
+				p := strings.TrimSuffix(v, "%")
+				f, err := strconv.ParseFloat(p, 64)
+				if err != nil {
+					return err
+				}
+				fe := f / 100
+				ih.fontexpansion = &fe
+			}
+		default:
+			slog.Debug("unresolved attribute", k, v)
+		}
+	}
+	return nil
+}
+
+// FormattingStyles are HTML formatting styles.
+type FormattingStyles struct {
+	BackgroundColor         *color.Color
+	BorderLeftWidth         bag.ScaledPoint
+	BorderRightWidth        bag.ScaledPoint
+	BorderBottomWidth       bag.ScaledPoint
+	BorderTopWidth          bag.ScaledPoint
+	BorderTopLeftRadius     bag.ScaledPoint
+	BorderTopRightRadius    bag.ScaledPoint
+	BorderBottomLeftRadius  bag.ScaledPoint
+	BorderBottomRightRadius bag.ScaledPoint
+	BorderLeftColor         *color.Color
+	BorderRightColor        *color.Color
+	BorderBottomColor       *color.Color
+	BorderTopColor          *color.Color
+	BorderLeftStyle         frontend.BorderStyle
+	BorderRightStyle        frontend.BorderStyle
+	BorderBottomStyle       frontend.BorderStyle
+	BorderTopStyle          frontend.BorderStyle
+	DefaultFontSize         bag.ScaledPoint
+	DefaultFontFamily       *frontend.FontFamily
+	color                   *color.Color
+	Hide                    bool
+	fontfamily              *frontend.FontFamily
+	fontfeatures            []string
+	variationSettings       map[string]float64 // axis tag -> value (e.g., "wght" -> 700)
+	Fontsize                bag.ScaledPoint
+	fontstyle               frontend.FontStyle
+	Fontweight              frontend.FontWeight
+	fontexpansion           *float64
+	Halign                  frontend.HorizontalAlignment
+	hangingPunctuation      frontend.HangingPunctuation
+	indent                  bag.ScaledPoint
+	indentRows              int
+	language                string
+	letterSpacing           bag.ScaledPoint
+	lineheight              bag.ScaledPoint
+	lineheightFactor        float64 // unitless line-height factor (e.g. 1.2); recalculated per element
+	ListStyleType           string
+	marginBottom            bag.ScaledPoint
+	marginLeft              bag.ScaledPoint
+	marginRight             bag.ScaledPoint
+	marginTop               bag.ScaledPoint
+	paddingInlineStart      bag.ScaledPoint
+	OlCounter               int
+	ListPaddingLeft         bag.ScaledPoint
+	PaddingBottom           bag.ScaledPoint
+	PaddingLeft             bag.ScaledPoint
+	PaddingRight            bag.ScaledPoint
+	PaddingTop              bag.ScaledPoint
+	TextDecorationLine      frontend.TextDecorationLine
+	leaderContent           string
+	preserveWhitespace      bool
+	tabsize                 bag.ScaledPoint
+	tabsizeSpaces           int
+	Valign                  frontend.VerticalAlignment
+	width                   string
+	pageBreakAfter          string
+	pageBreakBefore         string
+	yoffset                 bag.ScaledPoint
+}
+
+// Clone mimics style inheritance.
+func (is *FormattingStyles) Clone() *FormattingStyles {
+	// inherit
+	newFontFeatures := make([]string, len(is.fontfeatures))
+	copy(newFontFeatures, is.fontfeatures)
+	var newVariationSettings map[string]float64
+	if is.variationSettings != nil {
+		newVariationSettings = make(map[string]float64, len(is.variationSettings))
+		for k, v := range is.variationSettings {
+			newVariationSettings[k] = v
+		}
+	}
+	newis := &FormattingStyles{
+		BackgroundColor:    is.BackgroundColor,
+		color:              is.color,
+		DefaultFontSize:    is.DefaultFontSize,
+		DefaultFontFamily:  is.DefaultFontFamily,
+		fontexpansion:      is.fontexpansion,
+		fontfamily:         is.fontfamily,
+		fontfeatures:       newFontFeatures,
+		variationSettings:  newVariationSettings,
+		Fontsize:           is.Fontsize,
+		fontstyle:          is.fontstyle,
+		Fontweight:         is.Fontweight,
+		hangingPunctuation: is.hangingPunctuation,
+		language:           is.language,
+		letterSpacing:      is.letterSpacing,
+		lineheight:         is.lineheight,
+		lineheightFactor:   is.lineheightFactor,
+		ListStyleType:      is.ListStyleType,
+		ListPaddingLeft:    is.ListPaddingLeft,
+		OlCounter:          is.OlCounter,
+		preserveWhitespace: is.preserveWhitespace,
+		tabsize:            is.tabsize,
+		tabsizeSpaces:      is.tabsizeSpaces,
+		Valign:             is.Valign,
+		Halign:             is.Halign,
+	}
+	return newis
+}
+
+// ApplySettings converts the inheritable settings to boxes and glue text
+// settings.
+func ApplySettings(settings frontend.TypesettingSettings, ih *FormattingStyles) {
+	if ih.Fontweight > 0 {
+		settings[frontend.SettingFontWeight] = ih.Fontweight
+	}
+	settings[frontend.SettingBackgroundColor] = ih.BackgroundColor
+	settings[frontend.SettingBorderTopWidth] = ih.BorderTopWidth
+	settings[frontend.SettingBorderLeftWidth] = ih.BorderLeftWidth
+	settings[frontend.SettingBorderRightWidth] = ih.BorderRightWidth
+	settings[frontend.SettingBorderBottomWidth] = ih.BorderBottomWidth
+	settings[frontend.SettingBorderTopColor] = ih.BorderTopColor
+	settings[frontend.SettingBorderLeftColor] = ih.BorderLeftColor
+	settings[frontend.SettingBorderRightColor] = ih.BorderRightColor
+	settings[frontend.SettingBorderBottomColor] = ih.BorderBottomColor
+	settings[frontend.SettingBorderTopStyle] = ih.BorderTopStyle
+	settings[frontend.SettingBorderLeftStyle] = ih.BorderLeftStyle
+	settings[frontend.SettingBorderRightStyle] = ih.BorderRightStyle
+	settings[frontend.SettingBorderBottomStyle] = ih.BorderBottomStyle
+	settings[frontend.SettingBorderTopLeftRadius] = ih.BorderTopLeftRadius
+	settings[frontend.SettingBorderTopRightRadius] = ih.BorderTopRightRadius
+	settings[frontend.SettingBorderBottomLeftRadius] = ih.BorderBottomLeftRadius
+	settings[frontend.SettingBorderBottomRightRadius] = ih.BorderBottomRightRadius
+	settings[frontend.SettingColor] = ih.color
+	if ih.fontexpansion != nil {
+		settings[frontend.SettingFontExpansion] = *ih.fontexpansion
+	} else {
+		settings[frontend.SettingFontExpansion] = 0.05
+	}
+	settings[frontend.SettingFontFamily] = ih.fontfamily
+	settings[frontend.SettingHAlign] = ih.Halign
+	settings[frontend.SettingHangingPunctuation] = ih.hangingPunctuation
+	settings[frontend.SettingIndentLeft] = ih.indent
+	settings[frontend.SettingIndentLeftRows] = ih.indentRows
+	if ih.lineheightFactor != 0 {
+		settings[frontend.SettingLeading] = bag.ScaledPoint(float64(ih.Fontsize) * ih.lineheightFactor)
+	} else {
+		settings[frontend.SettingLeading] = ih.lineheight
+	}
+	settings[frontend.SettingLetterSpacing] = ih.letterSpacing
+	settings[frontend.SettingMarginBottom] = ih.marginBottom
+	settings[frontend.SettingMarginRight] = ih.marginRight
+	settings[frontend.SettingMarginLeft] = ih.marginLeft
+	settings[frontend.SettingMarginTop] = ih.marginTop
+	settings[frontend.SettingOpenTypeFeature] = ih.fontfeatures
+	if ih.variationSettings != nil {
+		settings[frontend.SettingFontVariationSettings] = ih.variationSettings
+	}
+	settings[frontend.SettingPaddingRight] = ih.PaddingRight
+	settings[frontend.SettingPaddingLeft] = ih.PaddingLeft
+	settings[frontend.SettingPaddingTop] = ih.PaddingTop
+	settings[frontend.SettingPaddingBottom] = ih.PaddingBottom
+	settings[frontend.SettingPreserveWhitespace] = ih.preserveWhitespace
+	settings[frontend.SettingSize] = ih.Fontsize
+	settings[frontend.SettingStyle] = ih.fontstyle
+	settings[frontend.SettingYOffset] = ih.yoffset
+	settings[frontend.SettingTabSize] = ih.tabsize
+	settings[frontend.SettingTabSizeSpaces] = ih.tabsizeSpaces
+	settings[frontend.SettingTextDecorationLine] = ih.TextDecorationLine
+
+	if ih.pageBreakAfter != "" {
+		settings[frontend.SettingPageBreakAfter] = ih.pageBreakAfter
+	}
+	if ih.pageBreakBefore != "" {
+		settings[frontend.SettingPageBreakBefore] = ih.pageBreakBefore
+	}
+	if ih.width != "" {
+		settings[frontend.SettingWidth] = ih.width
+	}
+	if ih.leaderContent != "" {
+		settings[frontend.SettingLeader] = ih.leaderContent
+	}
+}
+
+// StylesStack mimics CSS style inheritance.
+type StylesStack []*FormattingStyles
+
+// PushStyles creates a new style instance, pushes it onto the stack and returns
+// the new style.
+func (ss *StylesStack) PushStyles() *FormattingStyles {
+	var is *FormattingStyles
+	if len(*ss) == 0 {
+		is = &FormattingStyles{}
+	} else {
+		is = (*ss)[len(*ss)-1].Clone()
+	}
+	*ss = append(*ss, is)
+	return is
+}
+
+// PopStyles removes the top style from the stack.
+func (ss *StylesStack) PopStyles() {
+	*ss = (*ss)[:len(*ss)-1]
+}
+
+// CurrentStyle returns the current style from the stack. CurrentStyle does not
+// change the stack.
+func (ss StylesStack) CurrentStyle() *FormattingStyles {
+	return ss[len(ss)-1]
+}
+
+// SetDefaultFontFamily sets the font family that should be used as a default
+// for the document.
+func (ss *StylesStack) SetDefaultFontFamily(ff *frontend.FontFamily) {
+	for _, sty := range *ss {
+		sty.DefaultFontFamily = ff
+	}
+}
+
+// SetDefaultFontSize sets the document font size which should be used for rem
+// calculation.
+func (ss *StylesStack) SetDefaultFontSize(size bag.ScaledPoint) {
+	for _, sty := range *ss {
+		sty.DefaultFontSize = size
+	}
+}
+
+// parseCSSContentValue parses a CSS content value string, handling quoted
+// strings and CSS unicode escapes like \2022 (→ "•").
+func parseCSSContentValue(val string) string {
+	val = strings.TrimSpace(val)
+	// Remove surrounding quotes
+	if (strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`)) ||
+		(strings.HasPrefix(val, `'`) && strings.HasSuffix(val, `'`)) {
+		val = val[1 : len(val)-1]
+	}
+	// Resolve CSS unicode escapes: \HHHH
+	var b strings.Builder
+	for i := 0; i < len(val); i++ {
+		if val[i] == '\\' && i+1 < len(val) {
+			// Collect hex digits (up to 6)
+			j := i + 1
+			for j < len(val) && j < i+7 && isHexDigit(val[j]) {
+				j++
+			}
+			if j > i+1 {
+				cp, err := strconv.ParseInt(val[i+1:j], 16, 32)
+				if err == nil {
+					b.WriteRune(rune(cp))
+				}
+				// Skip optional trailing space after hex escape
+				if j < len(val) && val[j] == ' ' {
+					j++
+				}
+				i = j - 1
+				continue
+			}
+		}
+		b.WriteByte(val[i])
+	}
+	return b.String()
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+// Output turns HTML structure into a nested frontend.Text element.
+func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Text, error) {
+	// item is guaranteed to be in vertical direction
+	newte := frontend.NewText()
+	styles := ss.PushStyles()
+	if err := StylesToStyles(styles, item.Styles, df, ss.CurrentStyle().Fontsize); err != nil {
+		return nil, err
+	}
+	ApplySettings(newte.Settings, styles)
+	newte.Settings[frontend.SettingDebug] = item.Data
+	// Any element with an id attribute creates a named PDF destination.
+	if id, ok := item.Attributes["id"]; ok {
+		newte.Settings[frontend.SettingDest] = id
+	}
+	switch item.Data {
+	case "html":
+		if fs, ok := item.Styles["font-size"]; ok {
+			rfs := ParseRelativeSize(fs, 0, 0)
+			ss.SetDefaultFontSize(rfs)
+		}
+		if ffs, ok := item.Styles["font-family"]; ok {
+			ff := df.FindFontFamily(ffs)
+			ss.SetDefaultFontFamily(ff)
+		}
+	case "body":
+		if ffs, ok := item.Styles["font-family"]; ok {
+			ff := df.FindFontFamily(ffs)
+			ss.SetDefaultFontFamily(ff)
+		}
+	case "td", "th":
+		if cs, ok := item.Attributes["colspan"]; ok {
+			if colspan, err := strconv.Atoi(cs); err == nil {
+				newte.Settings[frontend.SettingColspan] = colspan
+			}
+		}
+		if rs, ok := item.Attributes["rowspan"]; ok {
+			if rowspan, err := strconv.Atoi(rs); err == nil {
+				newte.Settings[frontend.SettingRowspan] = rowspan
+			}
+		}
+		if vlid, ok := item.Attributes["data-vlist-id"]; ok {
+			newte.Settings[frontend.SettingPrerenderedVListID] = vlid
+		}
+	case "col":
+		// First check data-width (from XTS), then CSS width
+		if wd, ok := item.Attributes["data-width"]; ok {
+			newte.Settings[frontend.SettingColumnWidth] = wd
+		} else if wd, ok := item.Styles["width"]; ok {
+			newte.Settings[frontend.SettingColumnWidth] = wd
+		}
+	// case "table":
+	// 	tbl, err := processTable(item, ss, df)
+	// 	ss.PopStyles()
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	newte.Items = append(newte.Items, tbl)
+	// 	return newte, nil
+	case "ol", "ul":
+		styles.OlCounter = 0
+		styles.ListPaddingLeft = styles.PaddingLeft
+	case "li":
+		var marker string
+		// Check for ::before pseudo-element with content
+		if beforeContent, ok := item.Styles["before::content"]; ok {
+			marker = parseCSSContentValue(beforeContent)
+		} else if strings.HasPrefix(styles.ListStyleType, `"`) && strings.HasSuffix(styles.ListStyleType, `"`) {
+			marker = strings.TrimPrefix(styles.ListStyleType, `"`)
+			marker = strings.TrimSuffix(marker, `"`)
+		} else {
+			switch styles.ListStyleType {
+			case "disc":
+				marker = "•"
+			case "circle":
+				marker = "◦"
+			case "none":
+				marker = ""
+			case "square":
+				marker = "□"
+			case "decimal":
+				marker = fmt.Sprintf("%d.", styles.OlCounter)
+			default:
+				marker = "•"
+			}
+		}
+		markerSettings := make(frontend.TypesettingSettings, len(newte.Settings))
+		for k, v := range newte.Settings {
+			markerSettings[k] = v
+		}
+		// Apply ::before styles to the marker
+		for sKey, sVal := range item.Styles {
+			if !strings.HasPrefix(sKey, "before::") {
+				continue
+			}
+			prop := strings.TrimPrefix(sKey, "before::")
+			switch prop {
+			case "color":
+				if c := df.GetColor(sVal); c != nil {
+					markerSettings[frontend.SettingColor] = c
+				}
+			case "font-weight":
+				if fw, err := strconv.Atoi(sVal); err == nil {
+					markerSettings[frontend.SettingFontWeight] = frontend.FontWeight(fw)
+				} else if sVal == "bold" {
+					markerSettings[frontend.SettingFontWeight] = frontend.FontWeight700
+				}
+			}
+		}
+		if marker != "" {
+			n, err := df.BuildNodelistFromString(markerSettings, marker)
+			if err != nil {
+				return nil, err
+			}
+			glue1 := node.NewGlue()
+			glue1.Width = -styles.ListPaddingLeft
+			glue1.Stretch = 1 * bag.Factor
+			glue1.StretchOrder = node.StretchFil
+
+			gap := node.NewKern()
+			gap.Kern = styles.Fontsize / 3 // ~0.33em
+
+			node.InsertBefore(n, n, glue1)
+			node.InsertAfter(glue1, node.Tail(n), gap)
+			hbox := node.HpackTo(glue1, 0)
+
+			newte.Settings[frontend.SettingPrepend] = hbox
+		}
+	}
+
+	var te *frontend.Text
+	cur := ModeVertical
+
+	// display = "none"
+	if styles.Hide {
+		ss.PopStyles()
+		return newte, nil
+	}
+
+	for _, itm := range item.Children {
+		if itm.Dir == ModeHorizontal {
+			// Going from vertical to horizontal.
+			if cur == ModeVertical && itm.Data == " " {
+				// there is only a whitespace element.
+				continue
+			}
+			// now in horizontal mode, there can be more children in horizontal
+			// mode, so append all of them to a single frontend.Text element
+			if itm.Typ == html.TextNode && cur == ModeVertical {
+				itm.Data = strings.TrimLeft(itm.Data, " ")
+			}
+			if te == nil {
+				te = frontend.NewText()
+				styles = ss.PushStyles()
+			}
+			ApplySettings(te.Settings, styles)
+			if err := collectHorizontalNodes(te, itm, ss, ss.CurrentStyle().Fontsize, ss.CurrentStyle().DefaultFontSize, df); err != nil {
+				return nil, err
+			}
+			cur = ModeHorizontal
+		} else {
+			// still vertical
+			if itm.Data == "li" {
+				styles.OlCounter++
+			}
+			if te != nil {
+				newte.Items = append(newte.Items, te)
+				newte.Settings[frontend.SettingBox] = true
+				te = nil
+			}
+			te, err := Output(itm, ss, df)
+			if err != nil {
+				return nil, err
+			}
+			// Always include td/th/col elements even if empty (for table structure)
+			if len(te.Items) > 0 || itm.Data == "td" || itm.Data == "th" || itm.Data == "col" {
+				newte.Items = append(newte.Items, te)
+			}
+		}
+	}
+	if item.Dir == ModeVertical && cur == ModeVertical {
+		newte.Settings[frontend.SettingBox] = true
+	}
+	switch item.Data {
+	case "ul", "ol":
+		ulte := frontend.NewText()
+		ApplySettings(ulte.Settings, styles)
+		ulte.Settings[frontend.SettingDebug] = item.Data
+		ulte.Settings[frontend.SettingBox] = true
+	}
+	if te != nil {
+		newte.Items = append(newte.Items, te)
+		ss.PopStyles()
+		te = nil
+	}
+	ss.PopStyles()
+	return newte, nil
+}
+
+func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, currentFontsize bag.ScaledPoint, defaultFontsize bag.ScaledPoint, df *frontend.Document) error {
+	switch item.Typ {
+	case html.TextNode:
+		te.Items = append(te.Items, item.Data)
+	case html.ElementNode:
+		childSettings := make(frontend.TypesettingSettings, 8)
+		switch item.Data {
+		case "a":
+			var href, link string
+			for k, v := range item.Attributes {
+				switch k {
+				case "href":
+					href = v
+				case "link":
+					link = v
+				case "id":
+					childSettings[frontend.SettingDest] = v
+				}
+			}
+			if strings.HasPrefix(href, "#") {
+				link = strings.TrimPrefix(href, "#")
+				href = ""
+			}
+			if href != "" || link != "" {
+				hl := document.Hyperlink{URI: href, Local: link}
+				childSettings[frontend.SettingHyperlink] = hl
+			}
+		case "img":
+			cs := ss.CurrentStyle()
+			var filename string
+			var wd, ht bag.ScaledPoint
+
+			for k, v := range item.Attributes {
+				switch k {
+				case "width":
+					wd = bag.MustSP(v)
+				case "!width":
+					if !strings.HasSuffix(v, "%") {
+						wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+					}
+				case "height":
+					ht = bag.MustSP(v)
+				case "src":
+					filename = v
+				}
+			}
+
+			if strings.ToLower(filepath.Ext(filename)) == ".svg" {
+				// SVG image
+				f, err := os.Open(filename)
+				if err != nil {
+					return fmt.Errorf("opening SVG %s: %w", filename, err)
+				}
+				svgDoc, err := svgreader.Parse(f)
+				f.Close()
+				if err != nil {
+					return fmt.Errorf("parsing SVG %s: %w", filename, err)
+				}
+				textRenderer := frontend.NewSVGTextRenderer(df)
+				svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
+				// Wrap in VList so the SVG is correctly positioned in
+				// horizontal mode. The SVG renderer draws from (0,0)
+				// downward; a VList in an HList starts output from the
+				// top, which matches the SVG coordinate system.
+				svgVL := node.Vpack(svgNode)
+				svgVL.Attributes = node.H{
+					"origin": "svg",
+					"attr":   item.Attributes,
+				}
+				if alt, ok := item.Attributes["alt"]; ok {
+					svgVL.Attributes["alt"] = alt
+				}
+				te.Items = append(te.Items, svgVL)
+			} else {
+				// Raster image (PNG, JPEG, PDF)
+				imgfile, err := df.Doc.LoadImageFile(filename)
+				if err != nil {
+					return err
+				}
+				imgNode := df.Doc.CreateImageNodeFromImagefile(imgfile, 1, "/MediaBox")
+				// Apply user-specified dimensions
+				if wd > 0 && ht > 0 {
+					imgNode.Width = wd
+					imgNode.Height = ht
+				} else if wd > 0 {
+					// Scale height proportionally
+					imgNode.Height = bag.ScaledPoint(float64(imgNode.Height) * float64(wd) / float64(imgNode.Width))
+					imgNode.Width = wd
+				} else if ht > 0 {
+					// Scale width proportionally
+					imgNode.Width = bag.ScaledPoint(float64(imgNode.Width) * float64(ht) / float64(imgNode.Height))
+					imgNode.Height = ht
+				}
+				imgNode.Attributes = node.H{}
+				imgNode.Attributes["wd"] = wd
+				imgNode.Attributes["ht"] = ht
+				imgNode.Attributes["attr"] = item.Attributes
+				if alt, ok := item.Attributes["alt"]; ok {
+					imgNode.Attributes["alt"] = alt
+				}
+				te.Items = append(te.Items, imgNode)
+			}
+		case "svg":
+			if item.OrigNode == nil {
+				return fmt.Errorf("inline svg missing original node")
+			}
+
+			// Let svgreader own natural SVG dimensions (width/height/viewBox).
+			// Only override with real CSS lengths if explicitly set via stylesheet.
+			// width/height fall through the default: branch in ResolveAttributes,
+			// which sets resolved[key] = attr.Val; that becomes item.Styles.
+			// Raw SVG width="100" is unitless and must NOT be parsed as a CSS length.
+			var wd, ht bag.ScaledPoint
+			cs := ss.CurrentStyle()
+			if v, ok := item.Styles["width"]; ok && isCSSLength(v) {
+				wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+			}
+			if v, ok := item.Styles["height"]; ok && isCSSLength(v) {
+				ht = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+			}
+
+			var buf bytes.Buffer
+			serializeSVGNode(&buf, item.OrigNode)
+
+			svgDoc, err := svgreader.Parse(&buf)
+			if err != nil {
+				return fmt.Errorf("parsing inline SVG: %w", err)
+			}
+			textRenderer := frontend.NewSVGTextRenderer(df)
+			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
+			svgVL := node.Vpack(svgNode)
+			svgVL.Attributes = node.H{
+				"origin": "inline-svg",
+			}
+			te.Items = append(te.Items, svgVL)
+		case "barcode":
+			var value, typ, eclevelStr string
+			var wd, ht bag.ScaledPoint
+			for k, v := range item.Attributes {
+				switch k {
+				case "value":
+					value = v
+				case "type":
+					typ = v
+				case "width":
+					if sp, err := bag.SP(v); err == nil {
+						wd = sp
+					} else {
+						return fmt.Errorf("barcode: invalid width %q: %w", v, err)
+					}
+				case "!width":
+					cs := ss.CurrentStyle()
+					if !strings.HasSuffix(v, "%") {
+						wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+					}
+				case "height":
+					if sp, err := bag.SP(v); err == nil {
+						ht = sp
+					} else {
+						return fmt.Errorf("barcode: invalid height %q: %w", v, err)
+					}
+				case "eclevel":
+					eclevelStr = v
+				}
+			}
+			if value == "" {
+				return fmt.Errorf("barcode: missing value attribute")
+			}
+			if wd == 0 {
+				wd = bag.MustSP("3cm")
+			}
+			bcType, err := parseBarcodeType(typ)
+			if err != nil {
+				return err
+			}
+			ecl := parseQRECLevel(eclevelStr)
+			bcNode, err := createBarcode(bcType, value, wd, ht, df, ecl)
+			if err != nil {
+				return err
+			}
+			te.Items = append(te.Items, bcNode)
+		case "br":
+			br := node.NewPenalty()
+			br.Penalty = -10000
+			br.Attributes = node.H{"htmlbr": true}
+			te.Items = append(te.Items, br)
+			return nil
+		}
+
+		// Handle content-generated leaders on empty elements.
+		if contentVal, ok := item.Styles["content"]; ok && strings.HasPrefix(contentVal, "leader(") {
+			leaderText := frontend.NewText()
+			sty := ss.PushStyles()
+			if err := StylesToStyles(sty, item.Styles, df, currentFontsize); err != nil {
+				ss.PopStyles()
+				return err
+			}
+			ApplySettings(leaderText.Settings, sty)
+			te.Items = append(te.Items, leaderText)
+			ss.PopStyles()
+			return nil
+		}
+
+		for _, itm := range item.Children {
+			cld := frontend.NewText()
+			sty := ss.PushStyles()
+			if err := StylesToStyles(sty, item.Styles, df, currentFontsize); err != nil {
+				return err
+			}
+			ApplySettings(cld.Settings, sty)
+			for k, v := range childSettings {
+				cld.Settings[k] = v
+			}
+			if err := collectHorizontalNodes(cld, itm, ss, currentFontsize, defaultFontsize, df); err != nil {
+				return err
+			}
+			te.Items = append(te.Items, cld)
+			ss.PopStyles()
+		}
+	}
+	return nil
+}
+
+// cssLengthRE matches a valid CSS length: an optional sign, a number
+// (integer or decimal), and a unit. Also accepts unitless zero.
+// This rejects keywords (auto, inherit) and garbage like "boguspx".
+var cssLengthRE = regexp.MustCompile(`^[+-]?(?:\d+|\d*\.\d+)(?:px|pt|mm|cm|in|pc|em|rem)$|^0?\.0+$|^0$`)
+
+// isCSSLength returns true if v is a valid CSS length value.
+// ParseRelativeSize does not reject keywords — it silently falls back
+// to the current fontsize — so this guard prevents bogus dimensions.
+func isCSSLength(v string) bool {
+	v = strings.TrimSpace(strings.ToLower(v))
+	return cssLengthRE.MatchString(v)
+}
+
+// xmlAttrReplacer escapes attribute values for well-formed XML.
+var xmlAttrReplacer = strings.NewReplacer(
+	`&`, `&amp;`,
+	`<`, `&lt;`,
+	`>`, `&gt;`,
+	`"`, `&quot;`,
+)
+
+// serializeSVGNode writes an html.Node subtree as XML.
+// It operates on the original html.Node tree (not HTMLItem) to preserve
+// namespace information on attributes like xlink:href.
+func serializeSVGNode(buf *bytes.Buffer, n *html.Node) {
+	switch n.Type {
+	case html.TextNode:
+		xml.EscapeText(buf, []byte(n.Data))
+	case html.ElementNode:
+		buf.WriteByte('<')
+		buf.WriteString(n.Data)
+		for _, a := range n.Attr {
+			// Skip CSS-engine attributes injected by csshtml.
+			if strings.HasPrefix(a.Key, "!") {
+				continue
+			}
+			buf.WriteByte(' ')
+			if a.Namespace != "" {
+				buf.WriteString(a.Namespace)
+				buf.WriteByte(':')
+			}
+			buf.WriteString(a.Key)
+			buf.WriteString(`="`)
+			xmlAttrReplacer.WriteString(buf, a.Val)
+			buf.WriteByte('"')
+		}
+		if n.FirstChild == nil {
+			buf.WriteString("/>")
+			return
+		}
+		buf.WriteByte('>')
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			serializeSVGNode(buf, c)
+		}
+		buf.WriteString("</")
+		buf.WriteString(n.Data)
+		buf.WriteByte('>')
+	}
+}

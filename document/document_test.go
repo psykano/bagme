@@ -533,3 +533,21 @@ func TestMultipleOptionsChaining(t *testing.T) {
 		t.Errorf("expected 2 attachments, got %d", len(cfg.attachments))
 	}
 }
+
+func TestInlineSVG(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg := `<svg width="200" height="200" viewBox="0 0 200 200">
+		<rect x="10" y="10" width="180" height="180" fill="blue"/>
+		<circle cx="100" cy="100" r="80" fill="red"/>
+	</svg>`
+	if err := d.RenderPages(svg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
