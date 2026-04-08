@@ -1,14 +1,14 @@
-module github.com/boxesandglue/bagme
+module github.com/psykano/bagme
 
 go 1.24.0
 
 require (
 	github.com/boxesandglue/boxesandglue v0.2.10
 	github.com/boxesandglue/csshtml v0.0.8
-	github.com/boxesandglue/htmlbag v0.0.11
+	github.com/psykano/bagme/htmlbag v0.0.0
 )
 
-replace github.com/boxesandglue/htmlbag => ./htmlbag
+replace github.com/psykano/bagme/htmlbag => ./htmlbag
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0 // indirect

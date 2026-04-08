@@ -5,7 +5,7 @@ import (
 	"github.com/boxesandglue/boxesandglue/backend/document"
 	"github.com/boxesandglue/boxesandglue/frontend"
 	"github.com/boxesandglue/csshtml"
-	"github.com/boxesandglue/htmlbag"
+	"github.com/psykano/bagme/htmlbag"
 )
 
 // Attachment represents a file to embed in the PDF. Re-exported from the
