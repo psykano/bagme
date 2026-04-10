@@ -20,3 +20,5 @@ require (
 	github.com/speedata/css v1.0.5 // indirect
 	github.com/speedata/hyphenation v1.0.2 // indirect
 )
+
+replace github.com/boxesandglue/svgreader v0.0.2 => ./svgreader
