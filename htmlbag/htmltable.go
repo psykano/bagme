@@ -71,6 +71,13 @@ func (cb *CSSBuilder) buildTable(te *frontend.Text, wd bag.ScaledPoint) (*node.V
 		}
 	}
 
+	// Derive ColSpec from td/th CSS widths when no colgroup is present.
+	if len(tbl.ColSpec) == 0 {
+		if specs := collectCellWidths(te, tbl.MaxWidth); specs != nil {
+			tbl.ColSpec = specs
+		}
+	}
+
 	// First pass: process thead (header rows come first)
 	for _, itm := range te.Items {
 		switch t := itm.(type) {
@@ -114,6 +121,112 @@ func (cb *CSSBuilder) buildTable(te *frontend.Text, wd bag.ScaledPoint) (*node.V
 	}
 
 	return vl, nil
+}
+
+// collectCellWidths scans the table's frontend.Text tree for td/th elements
+// with CSS width declarations and converts them to ColSpec entries.
+// Cells with colspan are skipped. When multiple rows declare different widths
+// for the same column, the maximum is used.
+func collectCellWidths(te *frontend.Text, maxWidth bag.ScaledPoint) []frontend.ColSpec {
+	type colWidth struct {
+		width bag.ScaledPoint
+		set   bool
+	}
+	var widths []colWidth
+	nCols := 0
+
+	// processRow extracts widths from td/th elements in a tr.
+	processRow := func(tr *frontend.Text) {
+		col := 0
+		for _, itm := range tr.Items {
+			t, ok := itm.(*frontend.Text)
+			if !ok {
+				continue
+			}
+			elt, ok := t.Settings[frontend.SettingDebug].(string)
+			if !ok || (elt != "td" && elt != "th") {
+				continue
+			}
+			colspan := 0
+			if v, ok := t.Settings[frontend.SettingColspan]; ok && v != nil {
+				if cs, ok := v.(int); ok && cs > 1 {
+					colspan = cs - 1
+				}
+			}
+			if colspan == 0 {
+				if wdVal, ok := t.Settings[frontend.SettingWidth]; ok {
+					if wdStr, ok := wdVal.(string); ok && wdStr != "" {
+						sp := ParseRelativeSize(wdStr, maxWidth, maxWidth)
+						if sp > 0 {
+							for col >= len(widths) {
+								widths = append(widths, colWidth{})
+							}
+							if !widths[col].set || sp > widths[col].width {
+								widths[col] = colWidth{width: sp, set: true}
+							}
+						}
+					}
+				}
+			}
+			col += 1 + colspan
+		}
+		if col > nCols {
+			nCols = col
+		}
+	}
+
+	// processSection walks thead or tbody to find tr elements.
+	processSection := func(section *frontend.Text) {
+		for _, itm := range section.Items {
+			t, ok := itm.(*frontend.Text)
+			if !ok {
+				continue
+			}
+			elt, ok := t.Settings[frontend.SettingDebug].(string)
+			if !ok || elt != "tr" {
+				continue
+			}
+			processRow(t)
+		}
+	}
+
+	for _, itm := range te.Items {
+		t, ok := itm.(*frontend.Text)
+		if !ok {
+			continue
+		}
+		elt, ok := t.Settings[frontend.SettingDebug].(string)
+		if !ok {
+			continue
+		}
+		if elt == "thead" || elt == "tbody" {
+			processSection(t)
+		}
+	}
+
+	hasAny := false
+	for _, w := range widths {
+		if w.set {
+			hasAny = true
+			break
+		}
+	}
+	if !hasAny {
+		return nil
+	}
+
+	specs := make([]frontend.ColSpec, nCols)
+	for i := 0; i < nCols; i++ {
+		g := node.NewGlue()
+		if i < len(widths) && widths[i].set {
+			g.Width = widths[i].width
+		} else {
+			g.Stretch = bag.Factor
+			g.StretchOrder = 1
+		}
+		specs[i] = frontend.ColSpec{ColumnWidth: g}
+	}
+	return specs
 }
 
 func (cb *CSSBuilder) buildColgroup(te *frontend.Text, tbl *frontend.Table) {
