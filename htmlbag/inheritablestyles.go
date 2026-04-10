@@ -25,6 +25,28 @@ var (
 	tenptflt = bag.MustSP("10pt").ToPT()
 )
 
+// resolveFontFamily parses a CSS font-family value (potentially a
+// comma-separated fallback list) and returns the first registered family that
+// matches. CSS generic family names are mapped to bagme's registered names:
+// "sans-serif" → "sans", "serif" → "serif", "monospace" → "monospace".
+// Returns nil if no candidate matches any registered family.
+func resolveFontFamily(df *frontend.Document, value string) *frontend.FontFamily {
+	for _, candidate := range strings.Split(value, ",") {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.Trim(candidate, `"'`)
+		switch candidate {
+		case "sans-serif":
+			candidate = "sans"
+		case "cursive", "fantasy", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace":
+			candidate = "sans"
+		}
+		if ff := df.FindFontFamily(candidate); ff != nil {
+			return ff
+		}
+	}
+	return nil
+}
+
 // ParseVerticalAlign parses the input ("top","middle",...) and returns the
 // VerticalAlignment value.
 func ParseVerticalAlign(align string, styles *FormattingStyles) frontend.VerticalAlignment {
@@ -244,8 +266,7 @@ func StylesToStyles(ih *FormattingStyles, attributes map[string]string, df *fron
 		case "list-style-type":
 			ih.ListStyleType = v
 		case "font-family":
-			v = strings.Trim(v, `"`)
-			ih.fontfamily = df.FindFontFamily(v)
+			ih.fontfamily = resolveFontFamily(df, v)
 			if ih.fontfamily == nil {
 				bag.Logger.Error("Font family not found, reverting to 'serif'", "requested family", v)
 				ih.fontfamily = df.FindFontFamily("serif")
@@ -631,12 +652,18 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 			ss.SetDefaultFontSize(rfs)
 		}
 		if ffs, ok := item.Styles["font-family"]; ok {
-			ff := df.FindFontFamily(ffs)
+			ff := resolveFontFamily(df, ffs)
+			if ff == nil {
+				ff = df.FindFontFamily("serif")
+			}
 			ss.SetDefaultFontFamily(ff)
 		}
 	case "body":
 		if ffs, ok := item.Styles["font-family"]; ok {
-			ff := df.FindFontFamily(ffs)
+			ff := resolveFontFamily(df, ffs)
+			if ff == nil {
+				ff = df.FindFontFamily("serif")
+			}
 			ss.SetDefaultFontFamily(ff)
 		}
 	case "td", "th":
