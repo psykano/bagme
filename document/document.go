@@ -166,11 +166,14 @@ func (d *Document) OutputAt(html string, width, x, y bag.ScaledPoint) error {
 // Do not mix RenderPages and OutputAt in the same document.
 func (d *Document) RenderPages(html string) error {
 	d.syncCallbacks()
-	if err := d.cssbuilder.InitPage(); err != nil {
-		return err
-	}
+	// Parse HTML first so that body background-color is extracted (CSS 2.1
+	// §14.2) before InitPage creates the first page. Otherwise the root
+	// background won't be painted on page 1.
 	te, err := d.cssbuilder.HTMLToText(html)
 	if err != nil {
+		return err
+	}
+	if err := d.cssbuilder.InitPage(); err != nil {
 		return err
 	}
 	d.pagesRendered = true

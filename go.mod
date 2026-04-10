@@ -15,7 +15,7 @@ require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/boxesandglue/baseline-pdf v1.1.7 // indirect
 	github.com/boxesandglue/gofpdi v1.0.22 // indirect
-	github.com/boxesandglue/textshape v0.0.9 // indirect
+	github.com/boxesandglue/textshape v0.0.10 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/speedata/css v1.0.5 // indirect
 	github.com/speedata/hyphenation v1.0.2 // indirect
