@@ -558,6 +558,17 @@ func ApplySettings(settings frontend.TypesettingSettings, ih *FormattingStyles) 
 // StylesStack mimics CSS style inheritance.
 type StylesStack []*FormattingStyles
 
+// bodyBGColorStore is set by Output when processing the body element.
+// Used by CSSBuilder as a fallback when DOM extraction doesn't find
+// the body background-color (e.g., when ProcessHTMLChunk doesn't apply
+// <style> block CSS to DOM attributes).
+var bodyBGColorStore *color.Color
+
+// BodyBGColor returns the body background-color captured during Output processing.
+func (ss *StylesStack) BodyBGColor() *color.Color {
+	return bodyBGColorStore
+}
+
 // PushStyles creates a new style instance, pushes it onto the stack and returns
 // the new style.
 func (ss *StylesStack) PushStyles() *FormattingStyles {
@@ -672,6 +683,10 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 				ff = df.FindFontFamily("serif")
 			}
 			ss.SetDefaultFontFamily(ff)
+		}
+		// Capture body background-color for root bg propagation (CSS 2.1 §14.2).
+		if bgStr, ok := item.Styles["background-color"]; ok {
+			bodyBGColorStore = df.GetColor(bgStr)
 		}
 	case "td", "th":
 		if cs, ok := item.Attributes["colspan"]; ok {

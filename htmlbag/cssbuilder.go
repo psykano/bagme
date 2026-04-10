@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/boxesandglue/boxesandglue/backend/bag"
@@ -39,6 +41,18 @@ func extractBodyBGColor(n *html.Node) string {
 				return result
 			}
 		}
+	}
+	return ""
+}
+
+// extractBodyBGFromCSS extracts background-color from body CSS rules in the
+// HTML source. This is a fallback for when the CSS engine doesn't apply
+// <style> block rules to DOM attributes during ProcessHTMLChunk.
+var bodyBGRegex = regexp.MustCompile(`(?s)body\s*\{[^}]*?background(?:-color)?\s*:\s*([^;}\s]+)`)
+
+func extractBodyBGFromCSS(htmlStr string) string {
+	if m := bodyBGRegex.FindStringSubmatch(htmlStr); len(m) > 1 {
+		return strings.TrimSpace(m[1])
 	}
 	return ""
 }
@@ -105,6 +119,11 @@ type CSSBuilder struct {
 	// Per CSS 2.1 §14.2, the root element's background propagates to the page
 	// canvas (including margin area). Set by ParseHTMLFromNode / HTMLToText.
 	rootBGColor *color.Color
+}
+
+// RootBGColorIsNil returns true if rootBGColor has not been set.
+func (cb *CSSBuilder) RootBGColorIsNil() bool {
+	return cb.rootBGColor == nil
 }
 
 // New creates an instance of the CSSBuilder.
@@ -909,7 +928,9 @@ func (cb *CSSBuilder) HTMLToText(htmlStr string) (*frontend.Text, error) {
 		return nil, err
 	}
 	n := doc.Nodes[0]
-	// Extract body background-color before building the item tree (CSS 2.1 §14.2).
+	// Reset package-level body bg store (prevents cross-document leaking).
+	bodyBGColorStore = nil
+	// Try DOM-based extraction first (works when CSS engine fully applies styles).
 	if colorStr := extractBodyBGColor(n); colorStr != "" {
 		cb.rootBGColor = cb.frontend.GetColor(colorStr)
 	}
@@ -917,6 +938,21 @@ func (cb *CSSBuilder) HTMLToText(htmlStr string) (*frontend.Text, error) {
 	var te *frontend.Text
 	if te, err = HTMLNodeToText(n, cb.stylesStack, cb.frontend); err != nil {
 		return nil, err
+	}
+
+	// Fallback: if DOM extraction didn't find body bg, try the resolved styles
+	// captured during Output's body processing, or extract from CSS source.
+	if cb.rootBGColor == nil {
+		if bg := bodyBGColorStore; bg != nil {
+			cb.rootBGColor = bg
+		}
+	}
+	// Final fallback: parse body background-color directly from the HTML/CSS source.
+	// ProcessHTMLChunk may not apply <style> block CSS to DOM attributes.
+	if cb.rootBGColor == nil {
+		if colorStr := extractBodyBGFromCSS(htmlStr); colorStr != "" {
+			cb.rootBGColor = cb.frontend.GetColor(colorStr)
+		}
 	}
 
 	return te, nil
