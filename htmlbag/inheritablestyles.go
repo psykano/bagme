@@ -894,6 +894,7 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 					return fmt.Errorf("parsing SVG %s: %w", filename, err)
 				}
 				textRenderer := frontend.NewSVGTextRenderer(df)
+				textRenderer.DefaultFamily = df.FindFontFamily("sans")
 				svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
 				// Wrap in VList so the SVG is correctly positioned in
 				// horizontal mode. The SVG renderer draws from (0,0)
@@ -964,6 +965,7 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 				return fmt.Errorf("parsing inline SVG: %w", err)
 			}
 			textRenderer := frontend.NewSVGTextRenderer(df)
+			textRenderer.DefaultFamily = df.FindFontFamily("sans")
 			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
 			svgVL := node.Vpack(svgNode)
 			svgVL.Attributes = node.H{
