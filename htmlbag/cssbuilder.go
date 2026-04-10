@@ -8,6 +8,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/boxesandglue/boxesandglue/backend/bag"
+	"github.com/boxesandglue/boxesandglue/backend/color"
 	"github.com/boxesandglue/boxesandglue/backend/document"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
@@ -17,6 +18,41 @@ import (
 )
 
 var onecm = bag.MustSP("1cm")
+
+// extractBodyBGColor walks the HTML node tree to find the body element, removes
+// its !background-color attribute (set by ApplyCSS), and returns the raw color
+// string. Removal prevents double-painting at the element level. Returns "" if
+// body has no background-color.
+func extractBodyBGColor(n *html.Node) string {
+	for c := n; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && c.Data == "body" {
+			for i, attr := range c.Attr {
+				if attr.Key == "!background-color" {
+					c.Attr = append(c.Attr[:i], c.Attr[i+1:]...)
+					return attr.Val
+				}
+			}
+			return ""
+		}
+		if c.FirstChild != nil {
+			if result := extractBodyBGColor(c.FirstChild); result != "" {
+				return result
+			}
+		}
+	}
+	return ""
+}
+
+// paintRootBG paints cb.rootBGColor as a full-page background rectangle on the
+// current page. Must only be called when rootBGColor is non-nil.
+func (cb *CSSBuilder) paintRootBG(wd, ht bag.ScaledPoint) {
+	r := node.NewRule()
+	x := pdfdraw.NewStandalone().ColorNonstroking(*cb.rootBGColor).Rect(0, 0, wd, -ht).Fill()
+	r.Pre = x.String()
+	rvl := node.Vpack(r)
+	rvl.Attributes = node.H{"origin": "root background propagation"}
+	cb.frontend.Doc.CurrentPage.OutputAt(0, ht, rvl)
+}
 
 // HeadingEntry records a heading found during VList construction.
 // The Page field is filled later during OutputPages when the heading
@@ -65,6 +101,10 @@ type CSSBuilder struct {
 	// Used to pass already-rendered content (e.g. group contents) through
 	// the HTML/CSS pipeline into table cells.
 	PendingVLists map[string]*node.VList
+	// rootBGColor holds the background-color extracted from the body element.
+	// Per CSS 2.1 §14.2, the root element's background propagates to the page
+	// canvas (including margin area). Set by ParseHTMLFromNode / HTMLToText.
+	rootBGColor *color.Color
 }
 
 // New creates an instance of the CSSBuilder.
@@ -246,6 +286,8 @@ func (cb *CSSBuilder) InitPage() error {
 			rvl := node.Vpack(r)
 			rvl.Attributes = node.H{"origin": "page background color"}
 			cb.frontend.Doc.CurrentPage.OutputAt(0, ht, rvl)
+		} else if cb.rootBGColor != nil {
+			cb.paintRootBG(wd, ht)
 		}
 		cb.frontend.Doc.CurrentPage.OutputAt(ml, ht-mt, vl)
 		cb.firePageInit()
@@ -268,6 +310,9 @@ func (cb *CSSBuilder) InitPage() error {
 		MarginRight:   onecm,
 	}
 	cb.frontend.Doc.NewPage()
+	if cb.rootBGColor != nil {
+		cb.paintRootBG(cb.frontend.Doc.DefaultPageWidth, cb.frontend.Doc.DefaultPageHeight)
+	}
 	cb.firePageInit()
 	return nil
 }
@@ -301,7 +346,8 @@ func (cb *CSSBuilder) NewPage() error {
 	cb.frontend.Doc.CurrentPage.Shipout()
 	cb.frontend.Doc.NewPage()
 	// Update page dimensions for the new page (different @page selector may apply).
-	if pt := cb.getPageType(); pt != nil {
+	pt := cb.getPageType()
+	if pt != nil {
 		cb.currentPageDimensions.masterpage = pt
 		// Recalculate margins from the new page type.
 		if str := pt.MarginTop; str != "" {
@@ -334,6 +380,13 @@ func (cb *CSSBuilder) NewPage() error {
 		cb.currentPageDimensions.PageAreaTop = mt
 		cb.currentPageDimensions.ContentWidth = wd - ml - mr
 		cb.currentPageDimensions.ContentHeight = ht - mt - mb
+	}
+	// Paint root background on the new page (CSS 2.1 §14.2). @page bg takes precedence.
+	if cb.rootBGColor != nil {
+		hasPageBG := pt != nil && csshtml.GetAttributes(pt.Attributes)["background-color"] != ""
+		if !hasPageBG {
+			cb.paintRootBG(cb.currentPageDimensions.Width, cb.currentPageDimensions.Height)
+		}
 	}
 	// Store page dimensions on the new page for callback access.
 	if pd, err := cb.PageSize(); err == nil {
@@ -838,6 +891,10 @@ func (cb *CSSBuilder) ParseHTMLFromNode(input *html.Node) (*frontend.Text, error
 	}
 	var te *frontend.Text
 	n := gq.Nodes[0]
+	// Extract body background-color before building the item tree (CSS 2.1 §14.2).
+	if colorStr := extractBodyBGColor(n); colorStr != "" {
+		cb.rootBGColor = cb.frontend.GetColor(colorStr)
+	}
 	if te, err = HTMLNodeToText(n, cb.stylesStack, cb.frontend); err != nil {
 		return nil, err
 	}
@@ -846,12 +903,16 @@ func (cb *CSSBuilder) ParseHTMLFromNode(input *html.Node) (*frontend.Text, error
 }
 
 // HTMLToText interprets the HTML string and applies all previously read CSS data.
-func (cb *CSSBuilder) HTMLToText(html string) (*frontend.Text, error) {
-	doc, err := cb.css.ProcessHTMLChunk(html)
+func (cb *CSSBuilder) HTMLToText(htmlStr string) (*frontend.Text, error) {
+	doc, err := cb.css.ProcessHTMLChunk(htmlStr)
 	if err != nil {
 		return nil, err
 	}
 	n := doc.Nodes[0]
+	// Extract body background-color before building the item tree (CSS 2.1 §14.2).
+	if colorStr := extractBodyBGColor(n); colorStr != "" {
+		cb.rootBGColor = cb.frontend.GetColor(colorStr)
+	}
 
 	var te *frontend.Text
 	if te, err = HTMLNodeToText(n, cb.stylesStack, cb.frontend); err != nil {
