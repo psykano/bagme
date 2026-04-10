@@ -16,6 +16,7 @@ import (
 	"github.com/boxesandglue/boxesandglue/backend/document"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
+	"github.com/boxesandglue/boxesandglue/frontend/pdfdraw"
 	"github.com/boxesandglue/svgreader"
 	"golang.org/x/net/html"
 )
@@ -169,6 +170,12 @@ func StylesToStyles(ih *FormattingStyles, attributes map[string]string, df *fron
 			ih.Hide = (v == "none")
 		case "background-color":
 			ih.BackgroundColor = df.GetColor(v)
+		case "background":
+			// Simple color-only shorthand (hex, named, rgb). URL/gradient values
+			// return nil from GetColor and are silently ignored.
+			if col := df.GetColor(v); col != nil {
+				ih.BackgroundColor = col
+			}
 		case "border-right-width", "border-left-width", "border-top-width", "border-bottom-width":
 			size := ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
 			switch k {
@@ -1037,6 +1044,32 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 			ApplySettings(leaderText.Settings, sty)
 			te.Items = append(te.Items, leaderText)
 			ss.PopStyles()
+			return nil
+		}
+
+		// Empty inline-block element with explicit dimensions: render as a
+		// dimensioned colored Rule node (e.g. legend color chips).
+		// SCOPE: empty elements only — non-empty inline-block falls through.
+		if len(item.Children) == 0 && item.Styles["display"] == "inline-block" {
+			wStr := item.Styles["width"]
+			hStr := item.Styles["height"]
+			bgStr := item.Styles["background"]
+			if bgStr == "" {
+				bgStr = item.Styles["background-color"]
+			}
+			if isCSSLength(wStr) && isCSSLength(hStr) && bgStr != "" {
+				if bgCol := df.GetColor(bgStr); bgCol != nil {
+					wd := ParseRelativeSize(wStr, currentFontsize, defaultFontsize)
+					ht := ParseRelativeSize(hStr, currentFontsize, defaultFontsize)
+					r := node.NewRule()
+					r.Width = wd
+					r.Height = ht
+					r.Hide = true
+					r.Pre = pdfdraw.New().Save().ColorNonstroking(*bgCol).Rect(0, 0, wd, -ht).Fill().String()
+					r.Post = pdfdraw.New().Restore().String()
+					te.Items = append(te.Items, r)
+				}
+			}
 			return nil
 		}
 
