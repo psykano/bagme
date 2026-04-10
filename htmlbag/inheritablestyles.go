@@ -957,11 +957,23 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 			// Raw SVG width="100" is unitless and must NOT be parsed as a CSS length.
 			var wd, ht bag.ScaledPoint
 			cs := ss.CurrentStyle()
-			if v, ok := item.Styles["width"]; ok && isCSSLength(v) {
-				wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+			if v, ok := item.Styles["width"]; ok {
+				vl := strings.TrimSpace(strings.ToLower(v))
+				if p, ok2 := strings.CutSuffix(vl, "%"); ok2 {
+					if f, err := strconv.ParseFloat(p, 64); err == nil && f > 0 {
+						wd = bag.ScaledPoint(float64(df.Doc.DefaultPageWidth) * f / 100)
+					}
+				} else if isCSSLength(v) {
+					wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+				}
 			}
-			if v, ok := item.Styles["height"]; ok && isCSSLength(v) {
-				ht = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+			if v, ok := item.Styles["height"]; ok {
+				vl := strings.TrimSpace(strings.ToLower(v))
+				if strings.HasSuffix(vl, "%") {
+					slog.Warn("SVG height percentage treated as auto", "value", v)
+				} else if isCSSLength(v) {
+					ht = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)
+				}
 			}
 
 			var buf bytes.Buffer

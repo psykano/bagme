@@ -212,6 +212,146 @@ func TestCollectHorizontalNodesSVGNilOrigNode(t *testing.T) {
 	}
 }
 
+func TestSVGPercentageWidth(t *testing.T) {
+	// SVG with no explicit width/height — viewBox only.
+	input := `<html><body><svg viewBox="0 0 100 100"><rect x="0" y="0" width="100" height="100"/></svg></body></html>`
+	doc, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal("html.Parse:", err)
+	}
+	svgNode := findSVGNode(doc)
+	if svgNode == nil {
+		t.Fatal("no <svg> element found")
+	}
+
+	item := &HTMLItem{
+		Typ:        html.ElementNode,
+		Data:       "svg",
+		Dir:        ModeHorizontal,
+		Attributes: map[string]string{},
+		Styles:     map[string]string{"width": "50%"},
+		OrigNode:   svgNode,
+	}
+
+	df, err := frontend.NewForWriter(io.Discard)
+	if err != nil {
+		t.Fatal("frontend.NewForWriter:", err)
+	}
+	df.Doc.DefaultPageWidth = bag.MustSP("200pt")
+
+	var ss StylesStack
+	ss.PushStyles()
+
+	te := frontend.NewText()
+	defaultFontsize := bag.MustSP("10pt")
+
+	if err = collectHorizontalNodes(te, item, ss, defaultFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes:", err)
+	}
+	if len(te.Items) == 0 {
+		t.Fatal("no items emitted")
+	}
+	vl, ok := te.Items[0].(*node.VList)
+	if !ok {
+		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+	want := bag.MustSP("100pt")
+	if vl.Width != want {
+		t.Errorf("VList.Width = %v (%v pt), want %v (%v pt)", vl.Width, vl.Width.ToPT(), want, want.ToPT())
+	}
+}
+
+func TestSVGExplicitDimensionsUnaffected(t *testing.T) {
+	// SVG with explicit px/pt dimensions via CSS — existing code path unchanged.
+	input := `<html><body><svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="36"/></svg></body></html>`
+	doc, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal("html.Parse:", err)
+	}
+	svgNode := findSVGNode(doc)
+	if svgNode == nil {
+		t.Fatal("no <svg> element found")
+	}
+
+	item := &HTMLItem{
+		Typ:        html.ElementNode,
+		Data:       "svg",
+		Dir:        ModeHorizontal,
+		Attributes: map[string]string{},
+		Styles:     map[string]string{"width": "72pt", "height": "72pt"},
+		OrigNode:   svgNode,
+	}
+
+	df, err := frontend.NewForWriter(io.Discard)
+	if err != nil {
+		t.Fatal("frontend.NewForWriter:", err)
+	}
+
+	var ss StylesStack
+	ss.PushStyles()
+
+	te := frontend.NewText()
+	defaultFontsize := bag.MustSP("10pt")
+
+	if err = collectHorizontalNodes(te, item, ss, defaultFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes:", err)
+	}
+	if len(te.Items) == 0 {
+		t.Fatal("no items emitted")
+	}
+	vl, ok := te.Items[0].(*node.VList)
+	if !ok {
+		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+	want := bag.MustSP("72pt")
+	if vl.Width != want {
+		t.Errorf("VList.Width = %v pt, want %v pt", vl.Width.ToPT(), want.ToPT())
+	}
+}
+
+func TestSVGHeightPercentageIsAuto(t *testing.T) {
+	// SVG height="50%" must be treated as auto (ht=0); no error expected.
+	input := `<html><body><svg viewBox="0 0 100 100"><rect x="0" y="0" width="100" height="100"/></svg></body></html>`
+	doc, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal("html.Parse:", err)
+	}
+	svgNode := findSVGNode(doc)
+	if svgNode == nil {
+		t.Fatal("no <svg> element found")
+	}
+
+	item := &HTMLItem{
+		Typ:        html.ElementNode,
+		Data:       "svg",
+		Dir:        ModeHorizontal,
+		Attributes: map[string]string{},
+		Styles:     map[string]string{"height": "50%"},
+		OrigNode:   svgNode,
+	}
+
+	df, err := frontend.NewForWriter(io.Discard)
+	if err != nil {
+		t.Fatal("frontend.NewForWriter:", err)
+	}
+
+	var ss StylesStack
+	ss.PushStyles()
+
+	te := frontend.NewText()
+	defaultFontsize := bag.MustSP("10pt")
+
+	if err = collectHorizontalNodes(te, item, ss, defaultFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes:", err)
+	}
+	if len(te.Items) == 0 {
+		t.Fatal("no items emitted")
+	}
+	if _, ok := te.Items[0].(*node.VList); !ok {
+		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+}
+
 func TestIsCSSLength(t *testing.T) {
 	tests := []struct {
 		input string
