@@ -347,11 +347,7 @@ func (cb *CSSBuilder) PageSize() (PageDimensions, error) {
 
 // ParseCSSString reads CSS instructions from a string.
 func (cb *CSSBuilder) ParseCSSString(css string) error {
-	var err error
-	if err = cb.css.AddCSSText(css); err != nil {
-		return err
-	}
-	return nil
+	return cb.css.AddCSSText(css)
 }
 
 // NewPage puts the current page into the PDF document and starts with a new page.
