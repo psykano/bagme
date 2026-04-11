@@ -9,6 +9,7 @@ import (
 	"github.com/boxesandglue/boxesandglue/backend/document"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
+	"github.com/boxesandglue/svgreader"
 )
 
 // parseColumnWidth parses a column width specification and returns a Glue node.
@@ -355,33 +356,32 @@ func (cb *CSSBuilder) buildTD(te *frontend.Text, row *frontend.TableRow, isHeade
 	for _, itm := range te.Items {
 		switch t := itm.(type) {
 		case *frontend.Text:
-			// For box elements (ul, ol, div, etc.), create a FormatToVList function
-			// that uses CreateVlist - this ensures the same code path as outside tables
-			if isBox, ok := t.Settings[frontend.SettingBox]; ok && isBox.(bool) {
-				textCopy := t
-				ftv := func(wd bag.ScaledPoint) (*node.VList, error) {
-					vl, err := cb.CreateVlist(textCopy, wd)
-					if err != nil {
-						return nil, err
-					}
-					// Margin-bottom may have been propagated from a child
-					// through a borderless parent (CSS margin collapsing).
-					// In a table cell, materialize it as a kern.
-					if mb, ok := textCopy.Settings[frontend.SettingMarginBottom]; ok {
-						if mbSP, ok := mb.(bag.ScaledPoint); ok && mbSP > 0 {
-							k := node.NewKern()
-							k.Kern = mbSP
-							k.Attributes = node.H{"origin": "margin-bottom"}
-							vl.List = node.InsertAfter(vl.List, node.Tail(vl.List), k)
-							vl.Height += mbSP
-						}
-					}
-					return vl, nil
+			// Wrap all Text items in FormatToVList closures so cell content
+			// receives the actual cell width at layout time. This is critical
+			// for inline SVGs whose dimensions may depend on container width.
+			textCopy := t
+			ftv := func(wd bag.ScaledPoint) (*node.VList, error) {
+				// Re-render any percentage-width SVGs at the actual cell width.
+				resolveSVGWidths(textCopy.Items, wd, cb.frontend)
+				vl, err := cb.CreateVlist(textCopy, wd)
+				if err != nil {
+					return nil, err
 				}
-				td.Contents = append(td.Contents, frontend.FormatToVList(ftv))
-			} else {
-				td.Contents = append(td.Contents, itm)
+				// Margin-bottom may have been propagated from a child
+				// through a borderless parent (CSS margin collapsing).
+				// In a table cell, materialize it as a kern.
+				if mb, ok := textCopy.Settings[frontend.SettingMarginBottom]; ok {
+					if mbSP, ok := mb.(bag.ScaledPoint); ok && mbSP > 0 {
+						k := node.NewKern()
+						k.Kern = mbSP
+						k.Attributes = node.H{"origin": "margin-bottom"}
+						vl.List = node.InsertAfter(vl.List, node.Tail(vl.List), k)
+						vl.Height += mbSP
+					}
+				}
+				return vl, nil
 			}
+			td.Contents = append(td.Contents, frontend.FormatToVList(ftv))
 		default:
 			td.Contents = append(td.Contents, itm)
 		}
@@ -455,6 +455,46 @@ func (cb *CSSBuilder) tagTable(tableVL *node.VList, tbl *frontend.Table) {
 			cellIdx++
 		}
 		rowIdx++
+	}
+}
+
+// resolveSVGWidths walks a slice of frontend items and replaces any
+// percentage-width SVG VLists with versions rendered at the correct container
+// width. SVG VLists created during collectHorizontalNodes use DefaultPageWidth
+// for percentage resolution; this function re-renders them using the actual
+// cell/container width determined at layout time.
+func resolveSVGWidths(items []any, containerWidth bag.ScaledPoint, df *frontend.Document) {
+	for i, itm := range items {
+		switch v := itm.(type) {
+		case *node.VList:
+			pct, ok := v.Attributes["svg-width-pct"].(float64)
+			if !ok {
+				continue
+			}
+			svgDoc, ok := v.Attributes["svg-doc"].(*svgreader.Document)
+			if !ok {
+				continue
+			}
+			ht, _ := v.Attributes["svg-height"].(bag.ScaledPoint)
+			tr, _ := v.Attributes["svg-text-renderer"].(*frontend.SVGTextRenderer)
+			if tr == nil {
+				tr = frontend.NewSVGTextRenderer(df)
+				tr.DefaultFamily = df.FindFontFamily("sans")
+			}
+			newWd := bag.ScaledPoint(float64(containerWidth) * pct / 100)
+			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, newWd, ht, tr)
+			newVL := node.Vpack(svgNode)
+			newVL.Attributes = node.H{
+				"origin":              "inline-svg",
+				"svg-width-pct":       pct,
+				"svg-doc":             svgDoc,
+				"svg-height":          ht,
+				"svg-text-renderer":   tr,
+			}
+			items[i] = newVL
+		case *frontend.Text:
+			resolveSVGWidths(v.Items, containerWidth, df)
+		}
 	}
 }
 

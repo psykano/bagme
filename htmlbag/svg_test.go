@@ -398,6 +398,84 @@ func TestSVGText(t *testing.T) {
 	})
 }
 
+func TestSVGInTableCell(t *testing.T) {
+	// SVG with viewBox only — CSS width="50%" should resolve to 50% of container.
+	input := `<html><body><svg viewBox="0 0 100 100"><rect x="0" y="0" width="100" height="100"/></svg></body></html>`
+	doc, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal("html.Parse:", err)
+	}
+	svgNode := findSVGNode(doc)
+	if svgNode == nil {
+		t.Fatal("no <svg> element found")
+	}
+
+	item := &HTMLItem{
+		Typ:        html.ElementNode,
+		Data:       "svg",
+		Dir:        ModeHorizontal,
+		Attributes: map[string]string{},
+		Styles:     map[string]string{"width": "50%"},
+		OrigNode:   svgNode,
+	}
+
+	df, err := frontend.NewForWriter(io.Discard)
+	if err != nil {
+		t.Fatal("frontend.NewForWriter:", err)
+	}
+	df.Doc.DefaultPageWidth = bag.MustSP("400pt")
+
+	var ss StylesStack
+	ss.PushStyles()
+
+	te := frontend.NewText()
+	defaultFontsize := bag.MustSP("10pt")
+
+	if err = collectHorizontalNodes(te, item, ss, defaultFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes:", err)
+	}
+	if len(te.Items) == 0 {
+		t.Fatal("no items emitted")
+	}
+	vl, ok := te.Items[0].(*node.VList)
+	if !ok {
+		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+
+	// Initially rendered at 50% of DefaultPageWidth (400pt) = 200pt.
+	initialWant := bag.MustSP("200pt")
+	if vl.Width != initialWant {
+		t.Fatalf("initial VList.Width = %v pt, want %v pt", vl.Width.ToPT(), initialWant.ToPT())
+	}
+
+	// Verify percentage metadata was stored.
+	pct, ok := vl.Attributes["svg-width-pct"].(float64)
+	if !ok || pct != 50 {
+		t.Fatalf("svg-width-pct = %v, want 50", vl.Attributes["svg-width-pct"])
+	}
+	if _, ok := vl.Attributes["svg-doc"]; !ok {
+		t.Fatal("svg-doc attribute missing")
+	}
+
+	// Simulate table cell layout: resolve SVGs at a cell width of 200pt.
+	// 50% of 200pt = 100pt.
+	cellWidth := bag.MustSP("200pt")
+	resolveSVGWidths(te.Items, cellWidth, df)
+
+	resolved, ok := te.Items[0].(*node.VList)
+	if !ok {
+		t.Fatalf("after resolve, te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+	resolvedWant := bag.MustSP("100pt")
+	if resolved.Width != resolvedWant {
+		t.Errorf("resolved VList.Width = %v pt, want %v pt (50%% of 200pt)", resolved.Width.ToPT(), resolvedWant.ToPT())
+	}
+	// Verify it's still marked as inline-svg.
+	if origin, ok := resolved.Attributes["origin"]; !ok || origin != "inline-svg" {
+		t.Errorf("resolved VList origin = %v, want %q", resolved.Attributes["origin"], "inline-svg")
+	}
+}
+
 func TestIsCSSLength(t *testing.T) {
 	tests := []struct {
 		input string

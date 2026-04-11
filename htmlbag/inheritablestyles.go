@@ -971,11 +971,13 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 			// which sets resolved[key] = attr.Val; that becomes item.Styles.
 			// Raw SVG width="100" is unitless and must NOT be parsed as a CSS length.
 			var wd, ht bag.ScaledPoint
+			var widthPct float64
 			cs := ss.CurrentStyle()
 			if v, ok := item.Styles["width"]; ok {
 				vl := strings.TrimSpace(strings.ToLower(v))
 				if p, ok2 := strings.CutSuffix(vl, "%"); ok2 {
 					if f, err := strconv.ParseFloat(p, 64); err == nil && f > 0 {
+						widthPct = f
 						wd = bag.ScaledPoint(float64(df.Doc.DefaultPageWidth) * f / 100)
 					}
 				} else if isCSSLength(v) {
@@ -1004,6 +1006,14 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 			svgVL := node.Vpack(svgNode)
 			svgVL.Attributes = node.H{
 				"origin": "inline-svg",
+			}
+			// When width was a percentage, store SVG metadata so table cell
+			// layout can re-render at the correct container width.
+			if widthPct > 0 {
+				svgVL.Attributes["svg-width-pct"] = widthPct
+				svgVL.Attributes["svg-doc"] = svgDoc
+				svgVL.Attributes["svg-height"] = ht
+				svgVL.Attributes["svg-text-renderer"] = textRenderer
 			}
 			te.Items = append(te.Items, svgVL)
 		case "barcode":
