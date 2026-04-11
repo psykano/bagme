@@ -476,6 +476,93 @@ func TestSVGInTableCell(t *testing.T) {
 	}
 }
 
+// TestSVGWithTextSibling is a regression test for the bug where an inline SVG
+// followed by a text sibling produced garbled output. The SVG case in
+// collectHorizontalNodes previously lacked a return nil, causing SVG internal
+// nodes to be processed as text and appended to te.Items alongside the span text.
+func TestSVGWithTextSibling(t *testing.T) {
+	// SVG with a <title> child that contains text — this is the key: the SVG
+	// HTMLItem has Children, which the bug would process as inline text.
+	input := `<html><body><svg viewBox="0 0 100 100" width="100" height="100"><title>elastio</title><circle cx="50" cy="50" r="40"/></svg></body></html>`
+	doc, err := html.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal("html.Parse:", err)
+	}
+
+	svgNode := findSVGNode(doc)
+	if svgNode == nil {
+		t.Fatal("no <svg> element found")
+	}
+
+	// Build SVG HTMLItem WITH children to simulate the real parsed structure.
+	// The title child contains a text node "elastio" — without the fix this
+	// would leak into te.Items as a stray string.
+	svgItem := &HTMLItem{
+		Typ:        html.ElementNode,
+		Data:       "svg",
+		Dir:        ModeHorizontal,
+		Attributes: map[string]string{},
+		Styles:     map[string]string{},
+		OrigNode:   svgNode,
+		Children: []*HTMLItem{
+			{
+				Typ:  html.ElementNode,
+				Data: "title",
+				Dir:  ModeHorizontal,
+				Children: []*HTMLItem{
+					{Typ: html.TextNode, Data: "elastio"},
+				},
+			},
+		},
+	}
+
+	// The span text sibling.
+	spanTextItem := &HTMLItem{
+		Typ:  html.TextNode,
+		Data: "elastio",
+	}
+
+	df, err := frontend.NewForWriter(io.Discard)
+	if err != nil {
+		t.Fatal("frontend.NewForWriter:", err)
+	}
+
+	var ss StylesStack
+	ss.PushStyles()
+
+	te := frontend.NewText()
+	defaultFontsize := bag.MustSP("10pt")
+	currentFontsize := defaultFontsize
+
+	// Process the SVG item.
+	if err = collectHorizontalNodes(te, svgItem, ss, currentFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes (svg):", err)
+	}
+	// Process the span text sibling.
+	if err = collectHorizontalNodes(te, spanTextItem, ss, currentFontsize, defaultFontsize, df); err != nil {
+		t.Fatal("collectHorizontalNodes (text):", err)
+	}
+
+	// Must have exactly 2 items: VList (SVG) + string ("elastio").
+	if len(te.Items) != 2 {
+		t.Fatalf("te.Items has %d items, want 2; items: %v", len(te.Items), te.Items)
+	}
+
+	// First item must be the SVG VList.
+	vl, ok := te.Items[0].(*node.VList)
+	if !ok {
+		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
+	}
+	if origin, _ := vl.Attributes["origin"].(string); origin != "inline-svg" {
+		t.Fatalf("VList origin = %q, want %q", origin, "inline-svg")
+	}
+
+	// Second item must be the span text string — no stray SVG-internal strings.
+	if s, ok := te.Items[1].(string); !ok || s != "elastio" {
+		t.Fatalf("te.Items[1] = %v (%T), want string %q", te.Items[1], te.Items[1], "elastio")
+	}
+}
+
 func TestIsCSSLength(t *testing.T) {
 	tests := []struct {
 		input string

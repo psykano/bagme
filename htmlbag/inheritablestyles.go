@@ -1016,6 +1016,7 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 				svgVL.Attributes["svg-text-renderer"] = textRenderer
 			}
 			te.Items = append(te.Items, svgVL)
+			return nil
 		case "barcode":
 			var value, typ, eclevelStr string
 			var wd, ht bag.ScaledPoint
