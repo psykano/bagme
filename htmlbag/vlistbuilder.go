@@ -133,7 +133,7 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 				var vl *node.VList
 				if dbg, ok := t.Settings[frontend.SettingDebug].(string); ok && dbg == "table" {
 					var err error
-					vl, err = cb.buildTable(t, wd)
+					vl, err = cb.buildTable(t, childBaseWidth)
 					if err != nil {
 						return nil, err
 					}
