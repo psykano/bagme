@@ -126,6 +126,33 @@ func TestCollectCellWidths_MaxAcrossRows(t *testing.T) {
 	}
 }
 
+func TestCollectCellWidths_DefaultFlex(t *testing.T) {
+	table := makeText("table", []any{
+		makeText("tbody", []any{
+			makeText("tr", []any{
+				makeText("td", nil),
+				makeText("td", nil),
+				makeText("td", nil),
+			}),
+		}),
+	})
+	specs := defaultFlexColSpecs(table)
+	if len(specs) != 3 {
+		t.Fatalf("expected 3 ColSpec entries for 3-column table, got %d", len(specs))
+	}
+	for i, spec := range specs {
+		if spec.ColumnWidth.Stretch != bag.Factor {
+			t.Errorf("column %d: expected Stretch=bag.Factor (%v), got %v", i, bag.Factor, spec.ColumnWidth.Stretch)
+		}
+		if spec.ColumnWidth.Width != 0 {
+			t.Errorf("column %d: expected Width=0 for flex column, got %v", i, spec.ColumnWidth.Width)
+		}
+		if spec.ColumnWidth.StretchOrder != 1 {
+			t.Errorf("column %d: expected StretchOrder=1, got %d", i, spec.ColumnWidth.StretchOrder)
+		}
+	}
+}
+
 func TestCollectCellWidths_TheadAndTbody(t *testing.T) {
 	table := makeText("table", []any{
 		makeText("thead", []any{

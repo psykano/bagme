@@ -76,6 +76,9 @@ func (cb *CSSBuilder) buildTable(te *frontend.Text, wd bag.ScaledPoint) (*node.V
 	if len(tbl.ColSpec) == 0 {
 		if specs := collectCellWidths(te, tbl.MaxWidth); specs != nil {
 			tbl.ColSpec = specs
+		} else if tbl.Stretch {
+			// width:100% table with no explicit column widths — distribute equally
+			tbl.ColSpec = defaultFlexColSpecs(te)
 		}
 	}
 
@@ -225,6 +228,68 @@ func collectCellWidths(te *frontend.Text, maxWidth bag.ScaledPoint) []frontend.C
 			g.Stretch = bag.Factor
 			g.StretchOrder = 1
 		}
+		specs[i] = frontend.ColSpec{ColumnWidth: g}
+	}
+	return specs
+}
+
+// countTableColumns returns the column count of the table by scanning the first
+// row found in thead or tbody, summing cell counts accounting for colspan.
+func countTableColumns(te *frontend.Text) int {
+	for _, itm := range te.Items {
+		t, ok := itm.(*frontend.Text)
+		if !ok {
+			continue
+		}
+		elt, ok := t.Settings[frontend.SettingDebug].(string)
+		if !ok || (elt != "thead" && elt != "tbody") {
+			continue
+		}
+		for _, rowItm := range t.Items {
+			tr, ok := rowItm.(*frontend.Text)
+			if !ok {
+				continue
+			}
+			trElt, ok := tr.Settings[frontend.SettingDebug].(string)
+			if !ok || trElt != "tr" {
+				continue
+			}
+			n := 0
+			for _, cellItm := range tr.Items {
+				cell, ok := cellItm.(*frontend.Text)
+				if !ok {
+					continue
+				}
+				cellElt, ok := cell.Settings[frontend.SettingDebug].(string)
+				if !ok || (cellElt != "td" && cellElt != "th") {
+					continue
+				}
+				colspan := 1
+				if v, ok := cell.Settings[frontend.SettingColspan].(int); ok && v > 1 {
+					colspan = v
+				}
+				n += colspan
+			}
+			if n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// defaultFlexColSpecs generates equal flex ColSpec entries for a table with
+// no explicit column widths. Returns nil for empty tables (0 columns).
+func defaultFlexColSpecs(te *frontend.Text) []frontend.ColSpec {
+	n := countTableColumns(te)
+	if n == 0 {
+		return nil
+	}
+	specs := make([]frontend.ColSpec, n)
+	for i := range specs {
+		g := node.NewGlue()
+		g.Stretch = bag.Factor
+		g.StretchOrder = 1
 		specs[i] = frontend.ColSpec{ColumnWidth: g}
 	}
 	return specs
