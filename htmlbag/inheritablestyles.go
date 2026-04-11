@@ -856,13 +856,6 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 	if item.Dir == ModeVertical && cur == ModeVertical {
 		newte.Settings[frontend.SettingBox] = true
 	}
-	switch item.Data {
-	case "ul", "ol":
-		ulte := frontend.NewText()
-		ApplySettings(ulte.Settings, styles)
-		ulte.Settings[frontend.SettingDebug] = item.Data
-		ulte.Settings[frontend.SettingBox] = true
-	}
 	if te != nil {
 		newte.Items = append(newte.Items, te)
 		ss.PopStyles()
