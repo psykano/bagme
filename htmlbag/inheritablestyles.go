@@ -786,6 +786,20 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 
 			newte.Settings[frontend.SettingPrepend] = hbox
 		}
+	case "svg":
+		// SVG is classified as ModeVertical (block) so Output() is called for it
+		// instead of collectHorizontalNodes. Delegate to collectHorizontalNodes to
+		// reuse the existing SVG-building path (OrigNode serialization, CSS dimensions,
+		// widthPct metadata), then wrap the result in a Text for block layout.
+		svgTe := frontend.NewText()
+		ApplySettings(svgTe.Settings, styles)
+		if err := collectHorizontalNodes(svgTe, item, ss, styles.Fontsize, styles.DefaultFontSize, df); err != nil {
+			ss.PopStyles()
+			return nil, err
+		}
+		newte.Items = append(newte.Items, svgTe)
+		ss.PopStyles()
+		return newte, nil
 	}
 
 	var te *frontend.Text
