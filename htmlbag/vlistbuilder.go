@@ -49,12 +49,9 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 	}
 
 	// Get padding-left from this element to pass to children (for ul/ol lists)
-	var paddingLeft bag.ScaledPoint
-	if pl, ok := settings[frontend.SettingPaddingLeft]; ok {
-		paddingLeft = pl.(bag.ScaledPoint)
-	}
+	paddingLeft := settingSP(settings[frontend.SettingPaddingLeft])
 
-	if isBox, ok := settings[frontend.SettingBox]; ok && isBox.(bool) {
+	if boxVal, _ := settings[frontend.SettingBox].(bool); boxVal {
 		// PDF/UA: push a container structure element for this block
 		var containerSE *document.StructureElement
 		var savedStructureCurrent *document.StructureElement
@@ -112,10 +109,7 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 				}
 
 				// Get margin-top of current element
-				var curMarginTop bag.ScaledPoint
-				if mt, ok := t.Settings[frontend.SettingMarginTop]; ok {
-					curMarginTop = mt.(bag.ScaledPoint)
-				}
+				curMarginTop := settingSP(t.Settings[frontend.SettingMarginTop])
 
 				// Calculate collapsed margin (CSS margin collapsing)
 				var marginGlue bag.ScaledPoint
@@ -221,11 +215,7 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 				}
 
 				// Store margin-bottom for next iteration
-				if mb, ok := t.Settings[frontend.SettingMarginBottom]; ok {
-					prevMarginBottom = mb.(bag.ScaledPoint)
-				} else {
-					prevMarginBottom = 0
-				}
+				prevMarginBottom = settingSP(t.Settings[frontend.SettingMarginBottom])
 			}
 		}
 
@@ -242,12 +232,8 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 				// No border/padding: the last child's margin-bottom
 				// collapses through the parent boundary (CSS margin
 				// collapsing). Propagate the maximum to the parent.
-				if mb, ok := te.Settings[frontend.SettingMarginBottom]; ok {
-					parentMB := mb.(bag.ScaledPoint)
-					if prevMarginBottom > parentMB {
-						te.Settings[frontend.SettingMarginBottom] = prevMarginBottom
-					}
-				} else {
+				parentMB := settingSP(te.Settings[frontend.SettingMarginBottom])
+				if prevMarginBottom > parentMB {
 					te.Settings[frontend.SettingMarginBottom] = prevMarginBottom
 				}
 			}
