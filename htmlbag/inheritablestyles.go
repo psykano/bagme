@@ -91,7 +91,8 @@ func ParseRelativeSize(fs string, cur bag.ScaledPoint, root bag.ScaledPoint) bag
 	if p, ok := strings.CutSuffix(fs, "%"); ok {
 		f, err := strconv.ParseFloat(p, 64)
 		if err != nil {
-			panic(err)
+			slog.Warn("invalid percentage value in CSS size", "value", fs, "error", err)
+			return cur
 		}
 		ret := bag.MultiplyFloat(cur, f/100)
 		return ret
