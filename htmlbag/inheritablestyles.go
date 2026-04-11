@@ -48,6 +48,14 @@ func resolveFontFamily(df *frontend.Document, value string) *frontend.FontFamily
 	return nil
 }
 
+// newSVGTextRenderer creates an SVG text renderer configured with the default
+// sans font family. Used for both inline SVGs and SVG image files.
+func newSVGTextRenderer(df *frontend.Document) *frontend.SVGTextRenderer {
+	tr := frontend.NewSVGTextRenderer(df)
+	tr.DefaultFamily = df.FindFontFamily("sans")
+	return tr
+}
+
 // ParseVerticalAlign parses the input ("top","middle",...) and returns the
 // VerticalAlignment value.
 func ParseVerticalAlign(align string, styles *FormattingStyles) frontend.VerticalAlignment {
@@ -915,8 +923,7 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 				if err != nil {
 					return fmt.Errorf("parsing SVG %s: %w", filename, err)
 				}
-				textRenderer := frontend.NewSVGTextRenderer(df)
-				textRenderer.DefaultFamily = df.FindFontFamily("sans")
+				textRenderer := newSVGTextRenderer(df)
 				svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
 				// Wrap in VList so the SVG is correctly positioned in
 				// horizontal mode. The SVG renderer draws from (0,0)
@@ -1000,8 +1007,7 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 			if err != nil {
 				return fmt.Errorf("parsing inline SVG: %w", err)
 			}
-			textRenderer := frontend.NewSVGTextRenderer(df)
-			textRenderer.DefaultFamily = df.FindFontFamily("sans")
+			textRenderer := newSVGTextRenderer(df)
 			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, wd, ht, textRenderer)
 			svgVL := node.Vpack(svgNode)
 			svgVL.Attributes = node.H{

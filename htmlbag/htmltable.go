@@ -525,8 +525,7 @@ func resolveSVGWidths(items []any, containerWidth bag.ScaledPoint, df *frontend.
 			ht, _ := v.Attributes["svg-height"].(bag.ScaledPoint)
 			tr, _ := v.Attributes["svg-text-renderer"].(*frontend.SVGTextRenderer)
 			if tr == nil {
-				tr = frontend.NewSVGTextRenderer(df)
-				tr.DefaultFamily = df.FindFontFamily("sans")
+				tr = newSVGTextRenderer(df)
 			}
 			newWd := bag.ScaledPoint(float64(containerWidth) * pct / 100)
 			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, newWd, ht, tr)
