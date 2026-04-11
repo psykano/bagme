@@ -710,14 +710,6 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 		} else if wd, ok := item.Styles["width"]; ok {
 			newte.Settings[frontend.SettingColumnWidth] = wd
 		}
-	// case "table":
-	// 	tbl, err := processTable(item, ss, df)
-	// 	ss.PopStyles()
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	newte.Items = append(newte.Items, tbl)
-	// 	return newte, nil
 	case "ol", "ul":
 		styles.OlCounter = 0
 		styles.ListPaddingLeft = styles.PaddingLeft
