@@ -428,6 +428,17 @@ func (cb *CSSBuilder) buildTD(te *frontend.Text, row *frontend.TableRow, isHeade
 			ftv := func(wd bag.ScaledPoint) (*node.VList, error) {
 				// Re-render any percentage-width SVGs at the actual cell width.
 				resolveSVGWidths(textCopy.Items, wd, cb.frontend)
+				// If this Text item wraps a single inline-SVG VList, return it
+				// directly. FormatParagraph (called by CreateVlist) is a text
+				// formatter and cannot handle a VList item — it would serialize
+				// the SVG nodes as text instead of rendering the graphic.
+				if len(textCopy.Items) == 1 {
+					if svgVL, ok := textCopy.Items[0].(*node.VList); ok {
+						if origin, _ := svgVL.Attributes["origin"].(string); origin == "inline-svg" {
+							return svgVL, nil
+						}
+					}
+				}
 				vl, err := cb.CreateVlist(textCopy, wd)
 				if err != nil {
 					return nil, err

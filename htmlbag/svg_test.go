@@ -563,6 +563,57 @@ func TestSVGWithTextSibling(t *testing.T) {
 	}
 }
 
+// TestBuildTDInlineSVGBypass verifies that buildTD passes an inline-SVG VList
+// through directly without routing it through CreateVlist/FormatParagraph, which
+// would serialize the SVG nodes as text runs instead of rendering the graphic.
+func TestBuildTDInlineSVGBypass(t *testing.T) {
+	// svgVL represents what collectHorizontalNodes produces for an <svg> child:
+	// a *node.VList with origin "inline-svg".
+	svgVL := node.NewVList()
+	svgVL.Attributes = node.H{"origin": "inline-svg"}
+	svgVL.Width = bag.MustSP("20pt")
+	svgVL.Height = bag.MustSP("20pt")
+
+	// cld1 is the *frontend.Text wrapper that collectHorizontalNodes creates for
+	// the SVG child (each child gets a new Text at inheritablestyles.go:1115).
+	cld1 := frontend.NewText()
+	cld1.Items = append(cld1.Items, svgVL)
+
+	// te is the TD's Text; its Items contains the child wrappers.
+	te := frontend.NewText()
+	te.Items = append(te.Items, cld1)
+
+	// Minimal CSSBuilder: only PendingVLists is needed by buildTD.
+	// cb.frontend is accessed via resolveSVGWidths, but the SVG has no
+	// svg-width-pct attribute so that path is not taken.
+	cb := &CSSBuilder{PendingVLists: map[string]*node.VList{}}
+	row := &frontend.TableRow{}
+
+	cb.buildTD(te, row, false)
+
+	if len(row.Cells) != 1 {
+		t.Fatalf("expected 1 cell, got %d", len(row.Cells))
+	}
+	cell := row.Cells[0]
+	if len(cell.Contents) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(cell.Contents))
+	}
+	ftv, ok := cell.Contents[0].(frontend.FormatToVList)
+	if !ok {
+		t.Fatalf("Contents[0] is %T, want frontend.FormatToVList", cell.Contents[0])
+	}
+
+	// Invoke the closure — must return the original SVG VList directly,
+	// not a new one produced by CreateVlist/FormatParagraph.
+	got, err := ftv(bag.MustSP("200pt"))
+	if err != nil {
+		t.Fatal("FormatToVList closure:", err)
+	}
+	if got != svgVL {
+		t.Fatal("FormatToVList closure returned different VList; SVG bypass did not activate")
+	}
+}
+
 func TestIsCSSLength(t *testing.T) {
 	tests := []struct {
 		input string
