@@ -352,6 +352,52 @@ func TestSVGHeightPercentageIsAuto(t *testing.T) {
 	}
 }
 
+// TestSVGText verifies that SVG text rendering is not distorted by a wrong
+// aspect ratio when the SVG element carries width="100%".
+//
+// Root cause: parseDimension("100%") stripped "%" and returned 100, so
+// doc.Width was set to 100 instead of 0. The viewBox fallback (which would
+// have set doc.Width=500 from the viewBox) never triggered. This caused the
+// CTM scale factors sx=wPt/100 and sy=hPt/160 to be wildly wrong, making
+// glyphs appear 5x taller than intended and inserting apparent gaps between
+// characters in SVG text elements that had text-anchor="middle".
+func TestSVGText(t *testing.T) {
+	t.Run("PercentageWidthUsesViewBox", func(t *testing.T) {
+		// Mirrors the real report SVGs: width="100%" with a viewBox.
+		// After the fix, doc.Width must equal the viewBox width (500), not 100.
+		svgXML := `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="160" viewBox="0 0 500 160">` +
+			`<text text-anchor="middle" x="250" y="80">2.5</text></svg>`
+		doc, err := svgreader.Parse(strings.NewReader(svgXML))
+		if err != nil {
+			t.Fatal("svgreader.Parse:", err)
+		}
+		if doc.Width != 500 {
+			t.Errorf("doc.Width = %v, want 500 (viewBox width); got 100 means the %% fix is missing", doc.Width)
+		}
+		if doc.Height != 160 {
+			t.Errorf("doc.Height = %v, want 160", doc.Height)
+		}
+	})
+
+	t.Run("FixedWidthUnchanged", func(t *testing.T) {
+		// SVG with an explicit numeric width must continue to parse correctly.
+		// This is the code path used by donut-chart SVGs (width="220"), which
+		// rendered correctly before the fix and must not regress.
+		svgXML := `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">` +
+			`<text x="110" y="110">test</text></svg>`
+		doc, err := svgreader.Parse(strings.NewReader(svgXML))
+		if err != nil {
+			t.Fatal("svgreader.Parse:", err)
+		}
+		if doc.Width != 220 {
+			t.Errorf("doc.Width = %v, want 220", doc.Width)
+		}
+		if doc.Height != 220 {
+			t.Errorf("doc.Height = %v, want 220", doc.Height)
+		}
+	})
+}
+
 func TestIsCSSLength(t *testing.T) {
 	tests := []struct {
 		input string

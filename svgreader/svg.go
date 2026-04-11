@@ -175,9 +175,16 @@ func parseSVG(dec *xml.Decoder, start xml.StartElement) (*Document, error) {
 	for _, attr := range start.Attr {
 		switch attr.Name.Local {
 		case "width":
-			doc.Width = parseDimension(attr.Value)
+			// Percentage widths are relative to the container and don't represent
+			// natural SVG dimensions. Leave doc.Width = 0 so the viewBox fallback
+			// below provides the correct natural dimensions for aspect-ratio math.
+			if !strings.HasSuffix(strings.TrimSpace(attr.Value), "%") {
+				doc.Width = parseDimension(attr.Value)
+			}
 		case "height":
-			doc.Height = parseDimension(attr.Value)
+			if !strings.HasSuffix(strings.TrimSpace(attr.Value), "%") {
+				doc.Height = parseDimension(attr.Value)
+			}
 		case "viewBox":
 			doc.ViewBox = parseViewBox(attr.Value)
 		case "font-family":
