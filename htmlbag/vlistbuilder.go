@@ -356,73 +356,55 @@ func findImageAlt(te *frontend.Text) string {
 	return ""
 }
 
+// settingSP safely extracts a bag.ScaledPoint from a settings value.
+// Returns zero if the value is nil or not a ScaledPoint.
+func settingSP(v any) bag.ScaledPoint {
+	if sp, ok := v.(bag.ScaledPoint); ok {
+		return sp
+	}
+	return 0
+}
+
+// settingColor safely extracts a *color.Color from a settings value.
+// Returns nil if the value is nil or not a *color.Color.
+func settingColor(v any) *color.Color {
+	if c, ok := v.(*color.Color); ok {
+		return c
+	}
+	return nil
+}
+
+// settingBorderStyle safely extracts a frontend.BorderStyle from a settings value.
+func settingBorderStyle(v any) frontend.BorderStyle {
+	if bs, ok := v.(frontend.BorderStyle); ok {
+		return bs
+	}
+	return 0
+}
+
 // settingsToHTMLValues extracts border/padding/background settings into HTMLValues.
 func settingsToHTMLValues(settings frontend.TypesettingSettings) HTMLValues {
-	hv := HTMLValues{}
-
-	if v, ok := settings[frontend.SettingBackgroundColor]; ok && v != nil {
-		hv.BackgroundColor = v.(*color.Color)
+	return HTMLValues{
+		BackgroundColor:         settingColor(settings[frontend.SettingBackgroundColor]),
+		BorderTopWidth:          settingSP(settings[frontend.SettingBorderTopWidth]),
+		BorderRightWidth:        settingSP(settings[frontend.SettingBorderRightWidth]),
+		BorderBottomWidth:       settingSP(settings[frontend.SettingBorderBottomWidth]),
+		BorderLeftWidth:         settingSP(settings[frontend.SettingBorderLeftWidth]),
+		BorderTopColor:          settingColor(settings[frontend.SettingBorderTopColor]),
+		BorderRightColor:        settingColor(settings[frontend.SettingBorderRightColor]),
+		BorderBottomColor:       settingColor(settings[frontend.SettingBorderBottomColor]),
+		BorderLeftColor:         settingColor(settings[frontend.SettingBorderLeftColor]),
+		BorderTopStyle:          settingBorderStyle(settings[frontend.SettingBorderTopStyle]),
+		BorderRightStyle:        settingBorderStyle(settings[frontend.SettingBorderRightStyle]),
+		BorderBottomStyle:       settingBorderStyle(settings[frontend.SettingBorderBottomStyle]),
+		BorderLeftStyle:         settingBorderStyle(settings[frontend.SettingBorderLeftStyle]),
+		BorderTopLeftRadius:     settingSP(settings[frontend.SettingBorderTopLeftRadius]),
+		BorderTopRightRadius:    settingSP(settings[frontend.SettingBorderTopRightRadius]),
+		BorderBottomLeftRadius:  settingSP(settings[frontend.SettingBorderBottomLeftRadius]),
+		BorderBottomRightRadius: settingSP(settings[frontend.SettingBorderBottomRightRadius]),
+		PaddingTop:              settingSP(settings[frontend.SettingPaddingTop]),
+		PaddingRight:            settingSP(settings[frontend.SettingPaddingRight]),
+		PaddingBottom:           settingSP(settings[frontend.SettingPaddingBottom]),
+		PaddingLeft:             settingSP(settings[frontend.SettingPaddingLeft]),
 	}
-	if v, ok := settings[frontend.SettingBorderTopWidth]; ok && v != nil {
-		hv.BorderTopWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderRightWidth]; ok && v != nil {
-		hv.BorderRightWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomWidth]; ok && v != nil {
-		hv.BorderBottomWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderLeftWidth]; ok && v != nil {
-		hv.BorderLeftWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderTopColor]; ok && v != nil {
-		hv.BorderTopColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderRightColor]; ok && v != nil {
-		hv.BorderRightColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomColor]; ok && v != nil {
-		hv.BorderBottomColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderLeftColor]; ok && v != nil {
-		hv.BorderLeftColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderTopStyle]; ok && v != nil {
-		hv.BorderTopStyle = v.(frontend.BorderStyle)
-	}
-	if v, ok := settings[frontend.SettingBorderRightStyle]; ok && v != nil {
-		hv.BorderRightStyle = v.(frontend.BorderStyle)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomStyle]; ok && v != nil {
-		hv.BorderBottomStyle = v.(frontend.BorderStyle)
-	}
-	if v, ok := settings[frontend.SettingBorderLeftStyle]; ok && v != nil {
-		hv.BorderLeftStyle = v.(frontend.BorderStyle)
-	}
-	if v, ok := settings[frontend.SettingBorderTopLeftRadius]; ok && v != nil {
-		hv.BorderTopLeftRadius = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderTopRightRadius]; ok && v != nil {
-		hv.BorderTopRightRadius = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomLeftRadius]; ok && v != nil {
-		hv.BorderBottomLeftRadius = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomRightRadius]; ok && v != nil {
-		hv.BorderBottomRightRadius = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingTop]; ok && v != nil {
-		hv.PaddingTop = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingRight]; ok && v != nil {
-		hv.PaddingRight = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingBottom]; ok && v != nil {
-		hv.PaddingBottom = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingLeft]; ok && v != nil {
-		hv.PaddingLeft = v.(bag.ScaledPoint)
-	}
-
-	return hv
 }

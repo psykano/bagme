@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/boxesandglue/boxesandglue/backend/bag"
-	"github.com/boxesandglue/boxesandglue/backend/color"
 	"github.com/boxesandglue/boxesandglue/backend/document"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
@@ -366,48 +365,20 @@ func (cb *CSSBuilder) buildTD(te *frontend.Text, row *frontend.TableRow, isHeade
 		}
 	}
 
-	// Extract border settings from CSS
-	if v, ok := settings[frontend.SettingBorderTopWidth]; ok && v != nil {
-		td.BorderTopWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomWidth]; ok && v != nil {
-		td.BorderBottomWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderLeftWidth]; ok && v != nil {
-		td.BorderLeftWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderRightWidth]; ok && v != nil {
-		td.BorderRightWidth = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingBorderTopColor]; ok && v != nil {
-		td.BorderTopColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderBottomColor]; ok && v != nil {
-		td.BorderBottomColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderLeftColor]; ok && v != nil {
-		td.BorderLeftColor = v.(*color.Color)
-	}
-	if v, ok := settings[frontend.SettingBorderRightColor]; ok && v != nil {
-		td.BorderRightColor = v.(*color.Color)
-	}
-	// Extract padding settings
-	if v, ok := settings[frontend.SettingPaddingTop]; ok && v != nil {
-		td.PaddingTop = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingBottom]; ok && v != nil {
-		td.PaddingBottom = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingLeft]; ok && v != nil {
-		td.PaddingLeft = v.(bag.ScaledPoint)
-	}
-	if v, ok := settings[frontend.SettingPaddingRight]; ok && v != nil {
-		td.PaddingRight = v.(bag.ScaledPoint)
-	}
-	// Extract background color
-	if v, ok := settings[frontend.SettingBackgroundColor]; ok && v != nil {
-		td.BackgroundColor = v.(*color.Color)
-	}
+	// Extract border/padding/background settings from CSS.
+	td.BorderTopWidth = settingSP(settings[frontend.SettingBorderTopWidth])
+	td.BorderBottomWidth = settingSP(settings[frontend.SettingBorderBottomWidth])
+	td.BorderLeftWidth = settingSP(settings[frontend.SettingBorderLeftWidth])
+	td.BorderRightWidth = settingSP(settings[frontend.SettingBorderRightWidth])
+	td.BorderTopColor = settingColor(settings[frontend.SettingBorderTopColor])
+	td.BorderBottomColor = settingColor(settings[frontend.SettingBorderBottomColor])
+	td.BorderLeftColor = settingColor(settings[frontend.SettingBorderLeftColor])
+	td.BorderRightColor = settingColor(settings[frontend.SettingBorderRightColor])
+	td.PaddingTop = settingSP(settings[frontend.SettingPaddingTop])
+	td.PaddingBottom = settingSP(settings[frontend.SettingPaddingBottom])
+	td.PaddingLeft = settingSP(settings[frontend.SettingPaddingLeft])
+	td.PaddingRight = settingSP(settings[frontend.SettingPaddingRight])
+	td.BackgroundColor = settingColor(settings[frontend.SettingBackgroundColor])
 
 	// If this cell references a pre-rendered VList, use it directly as content.
 	if vlid, ok := settings[frontend.SettingPrerenderedVListID].(string); ok {
