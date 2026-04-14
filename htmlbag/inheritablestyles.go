@@ -177,6 +177,11 @@ func StylesToStyles(ih *FormattingStyles, attributes map[string]string, df *fron
 			// ignore for now
 		case "display":
 			ih.Hide = (v == "none")
+			if v == "flex" {
+				ih.displayFlex = true
+			} else if v == "inline-flex" || v == "grid" || v == "inline-grid" {
+				fmt.Fprintf(os.Stderr, "bagme: unsupported flex value %q — falling back to block\n", "display: "+v)
+			}
 		case "background-color":
 			ih.BackgroundColor = df.GetColor(v)
 		case "background":
@@ -370,6 +375,48 @@ func StylesToStyles(ih *FormattingStyles, attributes map[string]string, df *fron
 			ih.width = v
 		case "white-space":
 			ih.preserveWhitespace = (v == "pre")
+		case "flex":
+			parts := strings.Fields(v)
+			switch {
+			case len(parts) == 1:
+				if grow, err := strconv.ParseFloat(parts[0], 64); err == nil {
+					ih.flexGrow = grow
+					ih.flexShrink = 1
+				}
+			case len(parts) == 3:
+				if grow, err := strconv.ParseFloat(parts[0], 64); err == nil {
+					ih.flexGrow = grow
+				}
+				if shrink, err := strconv.ParseFloat(parts[1], 64); err == nil {
+					ih.flexShrink = shrink
+				}
+				if parts[2] == "auto" {
+					ih.flexBasisAuto = true
+				}
+			}
+		case "flex-grow":
+			if grow, err := strconv.ParseFloat(v, 64); err == nil {
+				ih.flexGrow = grow
+			}
+		case "flex-shrink":
+			if shrink, err := strconv.ParseFloat(v, 64); err == nil {
+				ih.flexShrink = shrink
+			}
+		case "gap":
+			ih.gap = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+		case "align-items":
+			ih.alignItems = v
+		case "justify-content":
+			ih.justifyContent = v
+		case "min-width":
+			ih.minWidth = ParseRelativeSize(v, curFontSize, ih.DefaultFontSize)
+			ih.minWidthSet = true
+		case "min-height":
+			// parse but no layout effect yet
+		case "box-sizing":
+			ih.boxSizingBorderBox = (v == "border-box")
+		case "flex-direction", "flex-wrap", "order", "align-self", "flex-basis":
+			fmt.Fprintf(os.Stderr, "bagme: unsupported flex value %q — falling back to block\n", k+": "+v)
 		case "-bag-font-expansion":
 			if strings.HasSuffix(v, "%") {
 				p := strings.TrimSuffix(v, "%")
@@ -447,6 +494,16 @@ type FormattingStyles struct {
 	pageBreakAfter          string
 	pageBreakBefore         string
 	yoffset                 bag.ScaledPoint
+	displayFlex             bool
+	flexGrow                float64
+	flexShrink              float64
+	flexBasisAuto           bool
+	gap                     bag.ScaledPoint
+	alignItems              string
+	justifyContent          string
+	minWidth                bag.ScaledPoint
+	minWidthSet             bool
+	boxSizingBorderBox      bool
 }
 
 // Clone mimics style inheritance.
@@ -564,6 +621,36 @@ func ApplySettings(settings frontend.TypesettingSettings, ih *FormattingStyles) 
 	}
 }
 
+func applyFlexSettings(settings frontend.TypesettingSettings, ih *FormattingStyles) {
+	if ih.displayFlex {
+		settings[SettingDisplayFlex] = true
+	}
+	if ih.flexGrow != 0 {
+		settings[SettingFlexGrow] = ih.flexGrow
+	}
+	if ih.flexShrink != 0 {
+		settings[SettingFlexShrink] = ih.flexShrink
+	}
+	if ih.flexBasisAuto {
+		settings[SettingFlexBasisAuto] = true
+	}
+	if ih.gap > 0 {
+		settings[SettingGap] = ih.gap
+	}
+	if ih.alignItems != "" {
+		settings[SettingAlignItems] = ih.alignItems
+	}
+	if ih.justifyContent != "" {
+		settings[SettingJustifyContent] = ih.justifyContent
+	}
+	if ih.minWidthSet {
+		settings[SettingMinWidth] = ih.minWidth
+	}
+	if ih.boxSizingBorderBox {
+		settings[SettingBoxSizingBorderBox] = true
+	}
+}
+
 // StylesStack mimics CSS style inheritance.
 type StylesStack []*FormattingStyles
 
@@ -667,6 +754,7 @@ func Output(item *HTMLItem, ss StylesStack, df *frontend.Document) (*frontend.Te
 		return nil, err
 	}
 	ApplySettings(newte.Settings, styles)
+	applyFlexSettings(newte.Settings, styles)
 	newte.Settings[frontend.SettingDebug] = item.Data
 	// Any element with an id attribute creates a named PDF destination.
 	if id, ok := item.Attributes["id"]; ok {

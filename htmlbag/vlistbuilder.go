@@ -82,6 +82,17 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 			}
 		}
 
+		if dflex, _ := settings[SettingDisplayFlex].(bool); dflex {
+			vl, err := cb.buildFlexRow(te, wd)
+			if err != nil {
+				return nil, err
+			}
+			if containerSE != nil {
+				cb.structureCurrent = savedStructureCurrent
+			}
+			return vl, nil
+		}
+
 		// Extract border/padding values for this container
 		hv := settingsToHTMLValues(settings)
 		hasBorderOrBg := hv.hasBorder() || hv.BackgroundColor != nil
@@ -258,6 +269,8 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 
 	// Reduce width by border and padding (CSS box-sizing: border-box behavior)
 	contentWidth := wd - hv.BorderLeftWidth - hv.BorderRightWidth - hv.PaddingLeft - hv.PaddingRight
+
+	stripFlexSettings(te.Settings)
 
 	// FormatParagraph -> Mknodes handles SettingPrepend (e.g., bullet points)
 	vl, _, err := cb.frontend.FormatParagraph(te, contentWidth)
