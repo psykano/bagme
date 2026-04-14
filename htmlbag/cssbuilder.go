@@ -676,25 +676,49 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 
 	storePageDimensions(cb, pd)
 
-	yStart := pd.Height - pd.MarginTop
+	y := pd.Height - pd.MarginTop
 	yLimit := pd.MarginBottom
-	y := yStart
 	pageHasContent := false
-	cur := contentList
 
+	return cb.processNodeList(contentList, contentWidth, &y, &yLimit, &pageHasContent, &pd)
+}
+
+// containsNestedTable reports whether any descendant VList in the linked list
+// starting at n has the _buildHeaders attribute set.
+func containsNestedTable(n node.Node) bool {
+	for ; n != nil; n = n.Next() {
+		if vl, ok := n.(*node.VList); ok {
+			if vl.Attributes != nil {
+				if _, ok := vl.Attributes["_buildHeaders"]; ok {
+					return true
+				}
+			}
+			if containsNestedTable(vl.List) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// processNodeList places each node in the linked list starting at head onto
+// the current page, breaking to new pages on overflow. Wrapper VLists that
+// contain nested tables with _buildHeaders are recursively decomposed so that
+// the continuation logic fires for grandchild (and deeper) table VLists.
+func (cb *CSSBuilder) processNodeList(head node.Node, contentWidth bag.ScaledPoint, y *bag.ScaledPoint, yLimit *bag.ScaledPoint, pageHasContent *bool, pd *PageDimensions) error {
 	refreshPage := func() error {
 		var err error
-		if pd, err = cb.PageSize(); err != nil {
+		*pd, err = cb.PageSize()
+		if err != nil {
 			return err
 		}
-		yStart = pd.Height - pd.MarginTop
-		yLimit = pd.MarginBottom
-		y = yStart
-		pageHasContent = false
+		*y = pd.Height - pd.MarginTop
+		*yLimit = pd.MarginBottom
+		*pageHasContent = false
 		return nil
 	}
 
-	for cur != nil {
+	for cur := head; cur != nil; {
 		next := cur.Next()
 		h := vlistNodeHeight(cur)
 
@@ -702,12 +726,27 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 		// page breaker can split the table naturally and repeat headers.
 		if tableVL, ok := cur.(*node.VList); ok && tableVL.Attributes != nil {
 			if buildHeadersFn, ok := tableVL.Attributes["_buildHeaders"]; ok {
-				if err := cb.outputTableRows(tableVL, buildHeadersFn, &y, &yLimit, &pageHasContent, &pd); err != nil {
+				if err := cb.outputTableRows(tableVL, buildHeadersFn, y, yLimit, pageHasContent, pd); err != nil {
 					return err
 				}
 				cur = next
 				continue
 			}
+		}
+
+		// Wrapper VList (e.g. <section>) containing a nested table with
+		// _buildHeaders: decompose by processing its children inline so that
+		// the table continuation logic can fire for grandchild table VLists.
+		if wrapVL, ok := cur.(*node.VList); ok && containsNestedTable(wrapVL.List) {
+			childWidth := contentWidth
+			if wrapVL.Width > 0 {
+				childWidth = wrapVL.Width
+			}
+			if err := cb.processNodeList(wrapVL.List, childWidth, y, yLimit, pageHasContent, pd); err != nil {
+				return err
+			}
+			cur = next
+			continue
 		}
 
 		// page-break-after: avoid
@@ -717,7 +756,7 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 			if nn := next.Next(); nn != nil {
 				peekH += vlistNodeHeight(nn)
 			}
-			if y-peekH < yLimit && pageHasContent {
+			if *y-peekH < *yLimit && *pageHasContent {
 				if err := cb.NewPage(); err != nil {
 					return err
 				}
@@ -728,7 +767,7 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 		}
 
 		// Overflow — start a new page.
-		if y-h < yLimit && pageHasContent {
+		if *y-h < *yLimit && *pageHasContent {
 			if err := cb.NewPage(); err != nil {
 				return err
 			}
@@ -745,8 +784,8 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 		box.Width = contentWidth
 		box.Height = h
 
-		cb.frontend.Doc.CurrentPage.OutputAt(pd.MarginLeft, y, box)
-		y -= h
+		cb.frontend.Doc.CurrentPage.OutputAt(pd.MarginLeft, *y, box)
+		*y -= h
 
 		if vl, ok := cur.(*node.VList); ok && vl.Attributes != nil {
 			if idx, ok := vl.Attributes["_heading_idx"].(int); ok && idx < len(cb.Headings) {
@@ -756,7 +795,7 @@ func (cb *CSSBuilder) outputGroupNodes(vl *node.VList, pd PageDimensions) error 
 
 		switch cur.(type) {
 		case *node.VList, *node.HList:
-			pageHasContent = true
+			*pageHasContent = true
 		}
 
 		if forceBreakAfter(cur) && next != nil {
@@ -799,7 +838,18 @@ func (cb *CSSBuilder) outputTableRows(tableVL *node.VList, buildHeadersFn any, y
 		return nil
 	}
 
+	// Guard against infinite loops: each row produces at most one page break
+	// plus header re-emission, so the total iterations should never exceed
+	// 2*len(rows) + a small constant.
+	maxIterations := 2*len(rows) + 4
+	iterations := 0
+
 	for i, row := range rows {
+		iterations++
+		if iterations > maxIterations {
+			return fmt.Errorf("outputTableRows: iteration limit %d exceeded (possible infinite loop)", maxIterations)
+		}
+
 		h := vlistNodeHeight(row)
 
 		// Check if row fits on current page.

@@ -286,6 +286,8 @@ func collectFlexChildWidths(t *testing.T, vl *node.VList) []bag.ScaledPoint {
 	}
 	for cur := hl.List; cur != nil; cur = cur.Next() {
 		switch n := cur.(type) {
+		case *node.VList:
+			widths = append(widths, n.Width)
 		case *node.HList:
 			widths = append(widths, n.Width)
 		}

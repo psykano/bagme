@@ -551,3 +551,249 @@ func TestInlineSVG(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestTableContinuation50Rows renders a table with 50 rows on a page that
+// fits roughly 20 rows. With the _buildHeaders continuation logic, the table
+// should span multiple pages and all rows should be rendered.
+func TestTableContinuation50Rows(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use a small page to force continuation.
+	if err := d.AddCSS(`@page { size: 100mm 120mm; margin: 5mm; }`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a table with thead + 50 body rows.
+	html := `<table style="width:100%"><thead><tr><th>Header A</th><th>Header B</th></tr></thead><tbody>`
+	for i := 1; i <= 50; i++ {
+		html += "<tr><td>Row " + itoa(i) + " Col1</td><td>Row " + itoa(i) + " Col2</td></tr>"
+	}
+	html += `</tbody></table>`
+
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	pageCount := len(d.Frontend.Doc.Pages)
+	if pageCount < 2 {
+		t.Errorf("expected multiple pages for 50-row table, got %d", pageCount)
+	}
+
+	info, err := os.Stat(filename)
+	if err != nil {
+		t.Fatal("PDF file not created:", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("PDF file is empty")
+	}
+}
+
+// TestTableContinuation_TheadEmptyTbody verifies that a table with <thead>
+// and an empty <tbody> renders without crashing.
+func TestTableContinuation_TheadEmptyTbody(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	html := `<table><thead><tr><th>Header</th></tr></thead><tbody></tbody></table>`
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTableContinuation_TheadSingleRow verifies that a table with <thead>
+// and a single body row renders on one page without phantom continuation.
+func TestTableContinuation_TheadSingleRow(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	html := `<table><thead><tr><th>Header A</th><th>Header B</th></tr></thead>` +
+		`<tbody><tr><td>One</td><td>Two</td></tr></tbody></table>`
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	pageCount := len(d.Frontend.Doc.Pages)
+	if pageCount != 1 {
+		t.Errorf("expected 1 page for small table, got %d", pageCount)
+	}
+}
+
+// TestTableContinuation_NoThead verifies that a table without <thead>
+// still renders (using the default block path, not continuation).
+func TestTableContinuation_NoThead(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	html := `<table><tbody><tr><td>A</td><td>B</td></tr>` +
+		`<tr><td>C</td><td>D</td></tr></tbody></table>`
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDORAEvidenceTableHang(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddCSS(`@page { size: letter; margin: 1.5cm; }`); err != nil {
+		t.Fatal(err)
+	}
+
+	html := `<table style="width:100%">
+  <thead><tr>
+    <th style="width:18%">Timestamp</th>
+    <th style="width:28%">Asset</th>
+    <th style="width:14%">Surface</th>
+    <th style="width:16%">Verdict</th>
+    <th style="width:10%">DORA Ref</th>
+  </tr></thead><tbody>`
+	for i := 1; i <= 28; i++ {
+		html += "<tr><td>04/08/2026</td><td>vol-" + itoa(i) + "</td><td>Backup</td><td><span>Clean</span></td><td>Art. 11</td></tr>"
+	}
+	html += `</tbody></table>`
+
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	pageCount := len(d.Frontend.Doc.Pages)
+	t.Logf("DORA evidence table: %d pages", pageCount)
+}
+
+func TestDORAFullTemplateHang(t *testing.T) {
+	html, err := os.ReadFile("/Users/chrisjohns/Documents/containment/blue-stack-reporting/html-to-pdf-sample/output/html/dora_compliance.html")
+	if err != nil {
+		t.Skip("DORA HTML not available:", err)
+	}
+
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddCSS(`@page { size: letter; margin: 1.5cm; }`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RenderPages(string(html)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("DORA full template: %d pages", len(d.Frontend.Doc.Pages))
+}
+
+func TestDORAMultiTableLayout(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddCSS(`@page { size: letter; margin: 1.5cm; }`); err != nil {
+		t.Fatal(err)
+	}
+
+	html := `<div style="background-color:#1a3a3a;color:#fff;padding:20px;">
+<table style="width:100%"><tr><td style="width:60%"><h1>Title</h1></td><td>Meta</td></tr></table>
+</div>
+<table style="width:100%"><tr><td>Stat1</td><td>Stat2</td><td>Stat3</td><td>Stat4</td></tr></table>
+<table style="width:100%"><tr><th style="width:28%">Control</th><th style="width:12%">Ref</th><th>Desc</th></tr>
+<tr><td>C1</td><td>Art.11</td><td>Desc1</td></tr>
+<tr><td>C2</td><td>Art.26</td><td>Desc2</td></tr></table>
+<table style="width:100%"><thead><tr>
+<th style="width:18%">Time</th><th style="width:28%">Asset</th><th style="width:14%">Surface</th><th style="width:16%">Verdict</th><th style="width:10%">Ref</th>
+</tr></thead><tbody>`
+	for i := 1; i <= 28; i++ {
+		html += "<tr><td>04/08</td><td>vol-" + itoa(i) + "</td><td>Backup</td><td>Clean</td><td>Art.11</td></tr>"
+	}
+	html += `</tbody></table>
+<table style="width:100%"><tr><td>Footer left</td><td>Footer right</td></tr></table>`
+
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("DORA multi-table: %d pages", len(d.Frontend.Doc.Pages))
+}
+
+// TestDetailTableContinuation verifies that a detail table wrapped in a
+// <section> element (grandchild of the content list) still triggers the
+// continuation/header-repeat logic in outputGroupNodes.
+// This matches the executive report layout: <section><div/><table thead/tbody/></section>.
+func TestDetailTableContinuation(t *testing.T) {
+	filename := tempPDF(t)
+	d, err := New(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddCSS(`@page { size: 100mm 120mm; margin: 5mm; }`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Section wrapper around the table — mirrors executive_report.html structure.
+	html := `<section style="padding:5px">
+		<div style="font-weight:bold">Section Title</div>
+		<table style="width:100%">
+			<thead><tr><th>Account</th><th>Region</th><th>Asset</th></tr></thead>
+			<tbody>`
+	for i := 1; i <= 50; i++ {
+		html += "<tr><td>acct-" + itoa(i) + "</td><td>us-east-1</td><td>vol-" + itoa(i) + "</td></tr>"
+	}
+	html += `</tbody></table></section>`
+
+	if err := d.RenderPages(html); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	pageCount := len(d.Frontend.Doc.Pages)
+	if pageCount < 2 {
+		t.Errorf("expected multiple pages for section-wrapped 50-row table, got %d", pageCount)
+	}
+}
+
+// itoa is a minimal int-to-string helper for test HTML generation.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for n > 0 {
+		s = string(rune('0'+n%10)) + s
+		n /= 10
+	}
+	return s
+}

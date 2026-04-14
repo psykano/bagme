@@ -116,6 +116,45 @@ func (cb *CSSBuilder) buildTable(te *frontend.Text, wd bag.ScaledPoint) (*node.V
 
 	vl := vls[0]
 
+	// Annotate tables with <thead> so the page breaker can split the table
+	// across pages and repeat header rows on each continuation page.
+	// We extract the already-built header HList nodes and deep-clone them
+	// on each call via CopyList to avoid circular linked-list bugs from
+	// re-invoking BuildTable on the same frontend.Text tree.
+	if tbl.HeaderRows > 0 {
+		if vl.Attributes == nil {
+			vl.Attributes = node.H{}
+		}
+		vl.Attributes["_headerCount"] = tbl.HeaderRows
+
+		var origHeaders []*node.HList
+		i := 0
+		for n := vl.List; n != nil && i < tbl.HeaderRows; n = n.Next() {
+			if hl, ok := n.(*node.HList); ok {
+				origHeaders = append(origHeaders, hl)
+				i++
+			}
+		}
+
+		vl.Attributes["_buildHeaders"] = func() ([]*node.HList, error) {
+			cloned := make([]*node.HList, len(origHeaders))
+			for i, orig := range origHeaders {
+				cp := node.NewHList()
+				cp.Width = orig.Width
+				cp.Height = orig.Height
+				cp.Depth = orig.Depth
+				cp.GlueSet = orig.GlueSet
+				cp.GlueSign = orig.GlueSign
+				cp.GlueOrder = orig.GlueOrder
+				if orig.List != nil {
+					cp.List = node.CopyList(orig.List)
+				}
+				cloned[i] = cp
+			}
+			return cloned, nil
+		}
+	}
+
 	// PDF/UA: tag the table structure.
 	// Repeated headers on continuation pages are left untagged
 	// (the backend will wrap them as artifacts in PDF/UA mode).

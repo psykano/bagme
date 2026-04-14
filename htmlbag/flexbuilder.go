@@ -74,9 +74,6 @@ func (cb *CSSBuilder) buildFlexRow(te *frontend.Text, wd bag.ScaledPoint) (*node
 			basisAuto = bAuto
 		}
 
-		tag, _ := childTe.Settings[frontend.SettingDebug].(string)
-		fmt.Fprintf(os.Stderr, "FLEX-DEBUG: child[%d] tag=%q grow=%v basisAuto=%v\n", len(children), tag, grow, basisAuto)
-
 		children = append(children, flexChild{
 			te:        childTe,
 			flexGrow:  grow,
@@ -124,11 +121,6 @@ func (cb *CSSBuilder) buildFlexRow(te *frontend.Text, wd bag.ScaledPoint) (*node
 		}
 	}
 
-	for i := range children {
-		tag, _ := children[i].te.Settings[frontend.SettingDebug].(string)
-		fmt.Fprintf(os.Stderr, "FLEX-WIDTH: child[%d] tag=%q width=%v (basisAuto=%v grow=%v)\n", i, tag, children[i].width, children[i].basisAuto, children[i].flexGrow)
-	}
-
 	var maxHeight bag.ScaledPoint
 	for i := range children {
 		vl, err := cb.buildVlistInternal(children[i].te, children[i].width)
@@ -150,36 +142,30 @@ func (cb *CSSBuilder) buildFlexRow(te *frontend.Text, wd bag.ScaledPoint) (*node
 			hlHead = node.InsertAfter(hlHead, node.Tail(hlHead), gapKern)
 		}
 
-		childHL := node.NewHList()
-		childHL.Width = child.width
-		childHL.Height = child.vl.Height
-		childHL.Depth = child.vl.Depth
+		child.vl.Width = child.width
 
 		if alignItems == "center" {
 			childHeight := child.vl.Height + child.vl.Depth
 			if childHeight < maxHeight {
 				shift := (maxHeight - childHeight) / 2
 				child.vl.ShiftX = 0
-				childHL.Height = maxHeight
-				childHL.Depth = 0
+
+				wrapper := node.NewVList()
+				wrapper.Width = child.width
+				wrapper.Height = maxHeight
+
 				topKern := node.NewKern()
 				topKern.Kern = shift
-				childHL.List = node.InsertAfter(nil, nil, topKern)
-				childHL.List = node.InsertAfter(childHL.List, topKern, child.vl)
+				wrapper.List = node.InsertAfter(nil, nil, topKern)
+				wrapper.List = node.InsertAfter(wrapper.List, topKern, child.vl)
+
+				hlHead = node.InsertAfter(hlHead, node.Tail(hlHead), wrapper)
 			} else {
-				childHL.List = child.vl
-				childHL.Height = maxHeight
-				childHL.Depth = 0
+				hlHead = node.InsertAfter(hlHead, node.Tail(hlHead), child.vl)
 			}
 		} else {
-			childHL.List = child.vl
-			if alignItems == "stretch" {
-				childHL.Height = maxHeight
-				childHL.Depth = 0
-			}
+			hlHead = node.InsertAfter(hlHead, node.Tail(hlHead), child.vl)
 		}
-
-		hlHead = node.InsertAfter(hlHead, node.Tail(hlHead), childHL)
 	}
 
 	rowHL := node.NewHList()
@@ -222,6 +208,13 @@ func estimateContentWidth(cb *CSSBuilder, te *frontend.Text, maxWidth bag.Scaled
 			return ParseRelativeSize(wdStr, maxWidth, maxWidth)
 		}
 	}
+	if mw, ok := te.Settings[SettingMinWidth].(bag.ScaledPoint); ok && mw > 0 {
+		hv := settingsToHTMLValues(te.Settings)
+		return mw + hv.PaddingLeft + hv.PaddingRight + hv.BorderLeftWidth + hv.BorderRightWidth
+	}
+	if dflex, _ := te.Settings[SettingDisplayFlex].(bool); dflex {
+		return estimateFlexIntrinsicWidth(cb, te, maxWidth)
+	}
 	vl, err := cb.buildVlistInternal(te, maxWidth)
 	if err != nil {
 		return maxWidth
@@ -230,6 +223,34 @@ func estimateContentWidth(cb *CSSBuilder, te *frontend.Text, maxWidth bag.Scaled
 		return vl.Width
 	}
 	return maxWidth
+}
+
+func estimateFlexIntrinsicWidth(cb *CSSBuilder, te *frontend.Text, maxWidth bag.ScaledPoint) bag.ScaledPoint {
+	settings := te.Settings
+	gap := settingSP(settings[SettingGap])
+	hv := settingsToHTMLValues(settings)
+
+	var totalWidth bag.ScaledPoint
+	var childCount int
+	for _, itm := range te.Items {
+		childTe, ok := itm.(*frontend.Text)
+		if !ok {
+			continue
+		}
+		if isWhitespaceOnly(childTe) {
+			if _, hasTag := childTe.Settings[frontend.SettingDebug]; !hasTag {
+				continue
+			}
+		}
+		childWidth := estimateContentWidth(cb, childTe, maxWidth)
+		totalWidth += childWidth
+		childCount++
+	}
+	if childCount > 1 {
+		totalWidth += gap * bag.ScaledPoint(childCount-1)
+	}
+	totalWidth += hv.PaddingLeft + hv.PaddingRight + hv.BorderLeftWidth + hv.BorderRightWidth
+	return totalWidth
 }
 
 func stripFlexSettings(settings frontend.TypesettingSettings) {
