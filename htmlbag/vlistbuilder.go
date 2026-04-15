@@ -221,6 +221,17 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 					}
 					vl.Attributes["pageBreakBefore"] = pbb
 				}
+				// page-break-inside / break-inside rides on an htmlbag-
+				// private SettingType sentinel; copy it to the VList's
+				// Attributes and delete from Settings so the sentinel
+				// cannot leak into frontend.FormatParagraph.
+				if pbi, ok := t.Settings[settingPageBreakInside]; ok {
+					if vl.Attributes == nil {
+						vl.Attributes = node.H{}
+					}
+					vl.Attributes["pageBreakInside"] = pbi
+					delete(t.Settings, settingPageBreakInside)
+				}
 
 				vls.List = node.InsertAfter(vls.List, node.Tail(vls.List), vl)
 				if vl.Width > vls.Width {

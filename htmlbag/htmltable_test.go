@@ -571,3 +571,182 @@ func TestOutputTableRows_ContinuationHeaderFit(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildTable_PageBreakInsideOnRow verifies that a <tr> whose Text carries
+// the htmlbag-private settingPageBreakInside sentinel has its value copied
+// onto the corresponding row HList's Attributes["pageBreakInside"] after
+// buildTable runs. This is the plumbing half of Task B: CSS
+// page-break-inside: avoid must survive the Text → row HList materialization
+// pipeline so that the paginator can act on it.
+func TestBuildTable_PageBreakInsideOnRow(t *testing.T) {
+	bodyTR := makeText("tr", []any{
+		makeText("td", nil),
+		makeText("td", nil),
+	})
+	bodyTR.Settings[settingPageBreakInside] = "avoid"
+
+	table := makeText("table", []any{
+		makeText("thead", []any{
+			makeText("tr", []any{
+				makeText("th", nil),
+				makeText("th", nil),
+			}),
+		}),
+		makeText("tbody", []any{bodyTR}),
+	})
+
+	vl := buildTableForTest(t, table, bag.MustSP("200pt"))
+
+	var rows []*node.HList
+	for n := vl.List; n != nil; n = n.Next() {
+		if hl, ok := n.(*node.HList); ok {
+			rows = append(rows, hl)
+		}
+	}
+	if len(rows) < 2 {
+		t.Fatalf("expected at least 2 row HLists (1 header + 1 body), got %d", len(rows))
+	}
+
+	headerRow := rows[0]
+	if headerRow.Attributes != nil {
+		if _, ok := headerRow.Attributes["pageBreakInside"]; ok {
+			t.Error("header row should not have pageBreakInside attribute (sentinel was only on body tr)")
+		}
+	}
+
+	bodyRow := rows[1]
+	if bodyRow.Attributes == nil {
+		t.Fatal("body row HList has nil Attributes")
+	}
+	v, ok := bodyRow.Attributes["pageBreakInside"]
+	if !ok {
+		t.Fatal("body row HList missing pageBreakInside attribute — sentinel not propagated from tr.Settings")
+	}
+	if v != "avoid" {
+		t.Errorf("body row pageBreakInside = %v, want %q", v, "avoid")
+	}
+}
+
+// TestOutputTableRows_AvoidBreakInsideForcesNewPage verifies that a row with
+// pageBreakInside="avoid" is pushed onto a fresh page instead of being placed
+// overflowing, even when the paginator's pageHasContent guard would normally
+// suppress the break. This is the behavioral half of Task B: the avoid
+// predicate must tighten the fit check so that a row with avoid is not placed
+// partially off-page.
+//
+// Setup: 200pt × 200pt page, zero margins. outputTableRows is invoked with
+// y primed to 100pt and pageHasContent=false, modeling an edge case where
+// some upstream content has already consumed page space without being tracked
+// by the paginator. A 120pt row with avoidBreakInside cannot fit in the
+// remaining 100pt slot. Without the fix the existing guard
+// (&& pageHasContent) suppresses NewPage, and the row is placed at y=100,
+// ending at y=-20 (overflow). With the fix the paginator recognises the
+// avoid attribute, forces NewPage, and the row is placed at y=200 where it
+// ends at y=80 — well within the page box.
+func TestOutputTableRows_AvoidBreakInsideForcesNewPage(t *testing.T) {
+	df := newTestDocument(t)
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+
+	if err := cb.ParseCSSString(`@page { size: 200pt 200pt; margin: 0 }`); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+	if err := cb.InitPage(); err != nil {
+		t.Fatal("InitPage:", err)
+	}
+	pd, err := cb.PageSize()
+	if err != nil {
+		t.Fatal("PageSize:", err)
+	}
+
+	wantPageHeight := bag.MustSP("200pt")
+	if pd.Height != wantPageHeight || pd.MarginTop != 0 || pd.MarginBottom != 0 {
+		t.Fatalf("page dims unexpected: height=%v mt=%v mb=%v (want 200pt/0/0)",
+			pd.Height, pd.MarginTop, pd.MarginBottom)
+	}
+
+	tableWidth := bag.MustSP("200pt")
+	rowHeight := bag.MustSP("120pt")
+
+	row := node.NewHList()
+	row.Width = tableWidth
+	row.Height = rowHeight
+	row.Attributes = node.H{"pageBreakInside": "avoid"}
+
+	tableVL := node.NewVList()
+	tableVL.List = row
+	tableVL.Width = tableWidth
+	tableVL.Height = rowHeight
+	buildHeaders := func() ([]*node.HList, error) { return nil, nil }
+	tableVL.Attributes = node.H{
+		"_headerCount":  0,
+		"_buildHeaders": buildHeaders,
+	}
+
+	// Snapshot existing object counts so we only inspect placements made by
+	// the outputTableRows call under test.
+	existingObjCount := make([]int, len(df.Doc.Pages))
+	for i, p := range df.Doc.Pages {
+		existingObjCount[i] = len(p.Objects)
+	}
+
+	y := bag.MustSP("100pt")
+	yLimit := pd.MarginBottom
+	pageHasContent := false
+
+	if err := cb.outputTableRows(tableVL, buildHeaders, &y, &yLimit, &pageHasContent, &pd); err != nil {
+		t.Fatal("outputTableRows:", err)
+	}
+
+	for pi, p := range df.Doc.Pages {
+		start := 0
+		if pi < len(existingObjCount) {
+			start = existingObjCount[pi]
+		}
+		for oi := start; oi < len(p.Objects); oi++ {
+			obj := p.Objects[oi]
+			vl := obj.Vlist
+			if vl == nil {
+				continue
+			}
+			h := vl.Height + vl.Depth
+			bottom := obj.Y - h
+			if bottom < pd.MarginBottom {
+				t.Errorf("page %d object %d overflows page box: y=%v h=%v bottom=%v (yLimit=%v)",
+					pi, oi, obj.Y, h, bottom, pd.MarginBottom)
+			}
+		}
+	}
+}
+
+// TestAvoidBreakInside_Predicate verifies the avoidBreakInside predicate
+// returns true for VList and HList nodes carrying the Attributes marker,
+// and false otherwise. Narrowly scoped so the predicate contract is pinned
+// by a test even if the fit-check call sites evolve.
+func TestAvoidBreakInside_Predicate(t *testing.T) {
+	vlAvoid := node.NewVList()
+	vlAvoid.Attributes = node.H{"pageBreakInside": "avoid"}
+	if !avoidBreakInside(vlAvoid) {
+		t.Error("avoidBreakInside(VList avoid) = false, want true")
+	}
+
+	hlAvoid := node.NewHList()
+	hlAvoid.Attributes = node.H{"pageBreakInside": "avoid"}
+	if !avoidBreakInside(hlAvoid) {
+		t.Error("avoidBreakInside(HList avoid) = false, want true")
+	}
+
+	vlAuto := node.NewVList()
+	vlAuto.Attributes = node.H{"pageBreakInside": "auto"}
+	if avoidBreakInside(vlAuto) {
+		t.Error("avoidBreakInside(VList auto) = true, want false")
+	}
+
+	vlBare := node.NewVList()
+	if avoidBreakInside(vlBare) {
+		t.Error("avoidBreakInside(bare VList) = true, want false")
+	}
+}
