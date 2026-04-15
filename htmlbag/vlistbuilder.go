@@ -310,6 +310,26 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 
 	stripFlexSettings(te.Settings)
 
+	// Capture-and-strip the htmlbag-private settingPageBreakInside
+	// sentinel before handing off to FormatParagraph. The sentinel
+	// rides on block-level Text.Settings (e.g. a <div> with
+	// page-break-inside: avoid) that reach the leaf branch whenever
+	// the block only contains inline content — in that case
+	// HTMLNodeToText leaves SettingBox off and the enclosing box
+	// branch never has a chance to read the sentinel from a child.
+	// FormatParagraph → Mknodes → BuildNodelistFromString has a strict
+	// "unknown setting" default that would error on the negative
+	// sentinel, so we must strip it. We then write the captured value
+	// onto the returned VList's Attributes — that is the same place
+	// the box-branch read-and-strip above targets, so upstream
+	// paginator code (avoidBreakInside / forceBreakBefore /
+	// forceBreakAfter) sees a single consistent shape regardless of
+	// which branch built the VList.
+	pbi, hasPBI := te.Settings[settingPageBreakInside]
+	if hasPBI {
+		delete(te.Settings, settingPageBreakInside)
+	}
+
 	// FormatParagraph -> Mknodes handles SettingPrepend (e.g., bullet points)
 	vl, _, err := cb.frontend.FormatParagraph(te, contentWidth)
 	if err != nil {
@@ -319,6 +339,17 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 	// Apply borders if any are defined
 	if hv.hasBorder() || hv.BackgroundColor != nil {
 		vl = cb.HTMLBorder(vl, hv)
+	}
+
+	// Attach the captured page-break-inside value onto the returned
+	// VList so the paginator predicate can see it. Done after
+	// HTMLBorder so the attribute sits on the outermost wrapper the
+	// paginator will actually look at.
+	if hasPBI {
+		if vl.Attributes == nil {
+			vl.Attributes = node.H{}
+		}
+		vl.Attributes["pageBreakInside"] = pbi
 	}
 
 	// PDF/UA: tag leaf block elements (p, h1-h6, pre, code)

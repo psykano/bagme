@@ -930,3 +930,179 @@ func TestPageBreakInside_CSSToRowHList_EndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// TestPageBreakInside_PaginatorHonorsCSSAttributeEndToEnd is the true
+// end-to-end behavioural test for Task B: real CSS + real HTML is parsed
+// into a real VList tree, the materialized div's Attributes["pageBreakInside"]
+// (sourced from the CSS selector, not manually written) is verified, and
+// then the **real processNodeList paginator** is invoked on the div with
+// its paginator state primed to the one edge case where the Task B fit-
+// check override differentiates from the pre-existing `pageHasContent`-
+// guarded check. The assertions prove:
+//
+//   1. NewPage was invoked exactly once — the paginator honoured the CSS
+//      avoid attribute by moving the div to a fresh page instead of
+//      leaving it at the primed y.
+//   2. No placement on any page overflows the page box.
+//   3. The div landed at page-top on the new page — intact — instead of
+//      being placed below its own height (which would have overflowed).
+//
+// Why the paginator state is primed: the Task B avoid override fires only
+// when `!*pageHasContent && *y-h < *yLimit && h <= pageContent`. In
+// realistic outputGroupNodes flow this state never arises — y is
+// initialised to pageTop with pageHasContent=false, and pageHasContent
+// flips to true as soon as any node is placed, after which the existing
+// `&& *pageHasContent` guard handles overflow. So the override is a
+// defensive fit-check tightening for edge cases, not a behaviour
+// reachable via a bare OutputPagesFromText render. The test threads real
+// CSS/HTML all the way through CreateVlist to the paginator, then primes
+// y and pageHasContent on the one call site where the override matters —
+// proving the paginator reads the CSS-sourced attribute off the
+// materialized VList and acts on it.
+//
+// Without the Task B fix (avoidBreakInside predicate + processNodeList
+// fit-check override), the existing guard would suppress NewPage
+// (pageHasContent is false), the div would be placed at primed y=divH-1
+// ending at y=-1, and assertions 1 and 2 would both fail.
+func TestPageBreakInside_PaginatorHonorsCSSAttributeEndToEnd(t *testing.T) {
+	df := newTestDocument(t)
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+
+	const css = `
+@page { size: 400pt 400pt; margin: 0 }
+.avoid-me { page-break-inside: avoid }
+`
+	if err := cb.ParseCSSString(css); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+	if err := cb.InitPage(); err != nil {
+		t.Fatal("InitPage:", err)
+	}
+
+	const htmlSrc = `<html><body><div class="avoid-me">content block that must not split</div></body></html>`
+
+	te, err := cb.HTMLToText(htmlSrc)
+	if err != nil {
+		t.Fatal("HTMLToText:", err)
+	}
+
+	pageWidth := bag.MustSP("400pt")
+	rootVL, err := cb.CreateVlist(te, pageWidth)
+	if err != nil {
+		t.Fatal("CreateVlist:", err)
+	}
+
+	// Walk the materialized VList tree and locate the div VList: the
+	// first VList whose Attributes carry a pageBreakInside entry. That
+	// attribute had to flow CSS → FormattingStyles.pageBreakInside →
+	// ApplySettings → settingPageBreakInside on the div's Text.Settings
+	// → the read-and-strip block in buildVlistInternal → VList.Attributes
+	// to end up here, so finding it proves the full CSS-to-VList plumbing
+	// is intact before we drive the paginator.
+	var avoidVL *node.VList
+	var walk func(n node.Node)
+	walk = func(n node.Node) {
+		for cur := n; cur != nil && avoidVL == nil; cur = cur.Next() {
+			if vl, ok := cur.(*node.VList); ok {
+				if vl.Attributes != nil {
+					if _, has := vl.Attributes["pageBreakInside"]; has {
+						avoidVL = vl
+						return
+					}
+				}
+				walk(vl.List)
+			}
+		}
+	}
+	walk(rootVL.List)
+	if avoidVL == nil {
+		walk(rootVL)
+	}
+	if avoidVL == nil {
+		t.Fatal("div VList with Attributes[pageBreakInside] not found — CSS→VList plumbing broken")
+	}
+	if v := avoidVL.Attributes["pageBreakInside"]; v != "avoid" {
+		t.Fatalf("avoidVL.Attributes[pageBreakInside] = %v, want %q", v, "avoid")
+	}
+
+	// Detach the div so processNodeList walks a single-node list.
+	avoidVL.SetPrev(nil)
+	avoidVL.SetNext(nil)
+
+	divH := avoidVL.Height + avoidVL.Depth
+	if divH <= 0 {
+		t.Fatal("div VList has zero height — cannot prime the fit check")
+	}
+
+	pd, err := cb.PageSize()
+	if err != nil {
+		t.Fatal("PageSize:", err)
+	}
+	pageContent := pd.Height - pd.MarginTop - pd.MarginBottom
+	if divH > pageContent {
+		t.Fatalf("div height %v exceeds page content %v — avoid override would be gated off", divH, pageContent)
+	}
+
+	// Prime state: y just below divH (fit check fails by 1 SP),
+	// pageHasContent=false (existing guard cannot trigger NewPage).
+	y := divH - bag.ScaledPoint(1)
+	yLimit := pd.MarginBottom
+	pageHasContent := false
+
+	existingObjCount := make([]int, len(df.Doc.Pages))
+	for i, p := range df.Doc.Pages {
+		existingObjCount[i] = len(p.Objects)
+	}
+	pagesBefore := len(df.Doc.Pages)
+
+	if err := cb.processNodeList(avoidVL, pageWidth, &y, &yLimit, &pageHasContent, &pd); err != nil {
+		t.Fatal("processNodeList:", err)
+	}
+
+	pagesAfter := len(df.Doc.Pages)
+	if pagesAfter != pagesBefore+1 {
+		t.Errorf("processNodeList did not call NewPage for avoid node: pagesBefore=%d pagesAfter=%d — avoid override did not fire",
+			pagesBefore, pagesAfter)
+	}
+
+	for pi, p := range df.Doc.Pages {
+		start := 0
+		if pi < len(existingObjCount) {
+			start = existingObjCount[pi]
+		}
+		for oi := start; oi < len(p.Objects); oi++ {
+			obj := p.Objects[oi]
+			vl := obj.Vlist
+			if vl == nil {
+				continue
+			}
+			h := vl.Height + vl.Depth
+			bottom := obj.Y - h
+			if bottom < pd.MarginBottom {
+				t.Errorf("page %d object %d overflows page box: y=%v h=%v bottom=%v (yLimit=%v)",
+					pi, oi, obj.Y, h, bottom, pd.MarginBottom)
+			}
+		}
+	}
+
+	if pagesAfter > pagesBefore {
+		lastPage := df.Doc.Pages[pagesAfter-1]
+		start := 0
+		if pagesAfter-1 < len(existingObjCount) {
+			start = existingObjCount[pagesAfter-1]
+		}
+		newObjsOnLast := lastPage.Objects[start:]
+		if len(newObjsOnLast) == 0 {
+			t.Fatal("new last page has no new objects — div was not placed there")
+		}
+		divObj := newObjsOnLast[len(newObjsOnLast)-1]
+		expectedTopY := pd.Height - pd.MarginTop
+		if divObj.Y != expectedTopY {
+			t.Errorf("div placed at y=%v on new page, expected page top y=%v", divObj.Y, expectedTopY)
+		}
+	}
+}
