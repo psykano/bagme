@@ -750,3 +750,183 @@ func TestAvoidBreakInside_Predicate(t *testing.T) {
 		t.Error("avoidBreakInside(bare VList) = true, want false")
 	}
 }
+
+// TestPageBreakInside_CSSToRowHList_EndToEnd is the integration test for
+// Task B: a realistic CSS rule (.detail-table tbody tr { page-break-inside:
+// avoid }) is parsed via ParseCSSString, an HTML snippet with a nested
+// thead/tbody table is parsed via HTMLToText, the resulting Text tree is
+// materialized through buildTable (the production path CSSBuilder takes for
+// table elements), and the resulting row HLists are inspected to confirm:
+//
+//   - Header rows (thead > tr) carry NO pageBreakInside attribute — the CSS
+//     rule is scoped to `tbody tr` and must not leak to header rows.
+//   - Every body row (tbody > tr) carries Attributes["pageBreakInside"] =
+//     "avoid".
+//
+// This exercises every link in the Task B chain: CSS parser → FormattingStyles
+// (pageBreakInside field + parse case) → ApplySettings → tr.Settings sentinel
+// → buildTable pre/post BuildTable pass → HList.Attributes. Before the Task B
+// fix any single link would have failed — pageBreakInside would not exist as
+// a FormattingStyles field, the sentinel constant would be undeclared, and
+// the row HList post-processing pass would not be present — so this test
+// together with avoidBreakInside+processNodeList exercises the full
+// implementation contract end-to-end via the real CSS parse path instead of
+// manually injecting the sentinel.
+func TestPageBreakInside_CSSToRowHList_EndToEnd(t *testing.T) {
+	df := newTestDocument(t)
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+
+	const css = `.detail-table tbody tr { page-break-inside: avoid }`
+	if err := cb.ParseCSSString(css); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+
+	const htmlSrc = `<html><body><table class="detail-table">
+<thead><tr><th>H1</th><th>H2</th></tr></thead>
+<tbody>
+<tr><td>body1a</td><td>body1b</td></tr>
+<tr><td>body2a</td><td>body2b</td></tr>
+</tbody>
+</table></body></html>`
+
+	te, err := cb.HTMLToText(htmlSrc)
+	if err != nil {
+		t.Fatal("HTMLToText:", err)
+	}
+
+	// Locate the table Text node inside the html>body tree.
+	var find func(t *frontend.Text) *frontend.Text
+	find = func(t *frontend.Text) *frontend.Text {
+		if elt, _ := t.Settings[frontend.SettingDebug].(string); elt == "table" {
+			return t
+		}
+		for _, itm := range t.Items {
+			if ct, ok := itm.(*frontend.Text); ok {
+				if r := find(ct); r != nil {
+					return r
+				}
+			}
+		}
+		return nil
+	}
+	tableTe := find(te)
+	if tableTe == nil {
+		t.Fatal("table Text node not found in parsed HTML tree")
+	}
+
+	// Sanity: the CSS rule must have reached the tbody tr Texts as the
+	// htmlbag-private sentinel — otherwise the failure is in the CSS→
+	// FormattingStyles→ApplySettings half of the pipeline and buildTable
+	// cannot possibly propagate it downstream. We fail here with a clear
+	// message so a future regression at the parse layer is attributed
+	// correctly instead of surfacing as a generic "body row missing
+	// attribute" further down.
+	var bodySectionCount, bodyTRCount int
+	for _, itm := range tableTe.Items {
+		sec, ok := itm.(*frontend.Text)
+		if !ok {
+			continue
+		}
+		if elt, _ := sec.Settings[frontend.SettingDebug].(string); elt != "tbody" {
+			continue
+		}
+		bodySectionCount++
+		for _, rowItm := range sec.Items {
+			tr, ok := rowItm.(*frontend.Text)
+			if !ok {
+				continue
+			}
+			if elt, _ := tr.Settings[frontend.SettingDebug].(string); elt != "tr" {
+				continue
+			}
+			bodyTRCount++
+			v, ok := tr.Settings[settingPageBreakInside]
+			if !ok {
+				t.Errorf("tbody tr #%d: settingPageBreakInside missing from tr.Settings — CSS rule did not propagate through ApplySettings", bodyTRCount)
+				continue
+			}
+			if v != "avoid" {
+				t.Errorf("tbody tr #%d: settingPageBreakInside = %v, want %q", bodyTRCount, v, "avoid")
+			}
+		}
+	}
+	if bodySectionCount != 1 {
+		t.Fatalf("expected 1 <tbody> section, found %d", bodySectionCount)
+	}
+	if bodyTRCount != 2 {
+		t.Fatalf("expected 2 body <tr> elements, found %d", bodyTRCount)
+	}
+
+	// Production path: buildTable → BuildTable + post-processing pass that
+	// copies the sentinel off source tr Texts onto row HList attributes.
+	vl, err := cb.buildTable(tableTe, bag.MustSP("400pt"))
+	if err != nil {
+		t.Fatal("buildTable:", err)
+	}
+
+	var rows []*node.HList
+	for n := vl.List; n != nil; n = n.Next() {
+		if hl, ok := n.(*node.HList); ok {
+			rows = append(rows, hl)
+		}
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 row HLists (1 header + 2 body), got %d", len(rows))
+	}
+
+	// Header row must NOT carry the attribute — the selector targets
+	// tbody tr only.
+	headerRow := rows[0]
+	if headerRow.Attributes != nil {
+		if _, has := headerRow.Attributes["pageBreakInside"]; has {
+			t.Error("header row carries pageBreakInside attribute — selector leaked from tbody tr to thead tr")
+		}
+	}
+
+	// Both body rows MUST carry page-break-inside: avoid on the
+	// materialized HList.
+	for i, r := range rows[1:] {
+		idx := i + 1
+		if r.Attributes == nil {
+			t.Errorf("body row %d: nil Attributes — sentinel not propagated from tr.Settings to row HList", idx)
+			continue
+		}
+		v, ok := r.Attributes["pageBreakInside"]
+		if !ok {
+			t.Errorf("body row %d: missing pageBreakInside attribute on row HList", idx)
+			continue
+		}
+		if v != "avoid" {
+			t.Errorf("body row %d: pageBreakInside = %v, want %q", idx, v, "avoid")
+		}
+	}
+
+	// Sentinel must have been stripped off source tr.Settings during
+	// buildTable's pre-BuildTable pass — leaving it behind risks leaking
+	// into frontend.FormatParagraph's strict unknown-setting default.
+	for _, itm := range tableTe.Items {
+		sec, ok := itm.(*frontend.Text)
+		if !ok {
+			continue
+		}
+		if elt, _ := sec.Settings[frontend.SettingDebug].(string); elt != "tbody" {
+			continue
+		}
+		for _, rowItm := range sec.Items {
+			tr, ok := rowItm.(*frontend.Text)
+			if !ok {
+				continue
+			}
+			if elt, _ := tr.Settings[frontend.SettingDebug].(string); elt != "tr" {
+				continue
+			}
+			if _, leaked := tr.Settings[settingPageBreakInside]; leaked {
+				t.Error("tbody tr: settingPageBreakInside survived on tr.Settings after buildTable — sentinel must be stripped to avoid leaking into frontend.FormatParagraph")
+			}
+		}
+	}
+}
