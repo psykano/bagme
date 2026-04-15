@@ -838,6 +838,17 @@ func (cb *CSSBuilder) outputTableRows(tableVL *node.VList, buildHeadersFn any, y
 		rows = append(rows, n)
 	}
 
+	// Precompute the vertical overhead that header re-emission will consume
+	// on every continuation page. The fit math below uses this so that a body
+	// row whose height exceeds (pageContent - headerOverhead) can still be
+	// placed on a fresh continuation page without the re-emitted headers
+	// pushing it past the page box. See D1 (cssbuilder.go:865 header
+	// re-emission) in BAGME_RENDERING_PRD.md.
+	var headerOverhead bag.ScaledPoint
+	for i := 0; i < headerCount && i < len(rows); i++ {
+		headerOverhead += vlistNodeHeight(rows[i])
+	}
+
 	refreshPage := func() error {
 		var err error
 		*pd, err = cb.PageSize()
@@ -880,7 +891,11 @@ func (cb *CSSBuilder) outputTableRows(tableVL *node.VList, buildHeadersFn any, y
 			}
 
 			// Repeat header rows on the new page (skip if this IS a header row).
-			if i >= headerCount {
+			// Fold header overhead into the fit math upstream: if re-emitting
+			// the headers would leave too little room for the incoming body
+			// row, drop the headers on this single continuation page so the
+			// row can use the full page instead of overflowing the page box.
+			if i >= headerCount && *y-headerOverhead-h >= *yLimit {
 				headers, err := buildHeaders()
 				if err != nil {
 					return err

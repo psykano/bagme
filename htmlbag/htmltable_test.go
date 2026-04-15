@@ -6,6 +6,7 @@ import (
 	"github.com/boxesandglue/boxesandglue/backend/bag"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
+	"github.com/boxesandglue/csshtml"
 )
 
 // TestDetailTableContinuation verifies that containsNestedTable detects a
@@ -449,5 +450,124 @@ func TestBuildTable_TheadSingleRow(t *testing.T) {
 	}
 	if rowCount != 2 {
 		t.Errorf("expected 2 rows (1 header + 1 body), got %d", rowCount)
+	}
+}
+
+// TestOutputTableRows_ContinuationHeaderFit verifies that outputTableRows does
+// not overflow past the page box when a body row is taller than
+// (pageContentHeight - headerOverhead). Before the A2 fix the paginator would
+// re-emit headers on the continuation page and then place the oversized body
+// row below them, causing the row to extend past the page bottom. With the
+// fix the paginator folds header overhead into the fit math and skips header
+// re-emission for rows that would otherwise overflow, so every placement
+// stays within the page box.
+func TestOutputTableRows_ContinuationHeaderFit(t *testing.T) {
+	df := newTestDocument(t)
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+
+	// Small page: 200pt x 150pt, no margins — so pageContent = 150pt.
+	if err := cb.ParseCSSString(`@page { size: 200pt 150pt; margin: 0 }`); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+	if err := cb.InitPage(); err != nil {
+		t.Fatal("InitPage:", err)
+	}
+	pd, err := cb.PageSize()
+	if err != nil {
+		t.Fatal("PageSize:", err)
+	}
+
+	// Sanity: page must actually be 150pt tall with zero margins.
+	wantHeight := bag.MustSP("150pt")
+	if pd.Height != wantHeight || pd.MarginTop != 0 || pd.MarginBottom != 0 {
+		t.Fatalf("page dims unexpected: height=%v mt=%v mb=%v (want 150pt/0/0)",
+			pd.Height, pd.MarginTop, pd.MarginBottom)
+	}
+
+	headerHeight := bag.MustSP("40pt")
+	// Body row height: 120pt. Chosen so header+body = 160pt > page 150pt,
+	// i.e. a body row cannot fit on a continuation page after headers are
+	// re-emitted (150 - 40 = 110 < 120). But a bare body row still fits
+	// on a full page (120 <= 150), so the fix has room to place it by
+	// skipping header re-emission for that page.
+	bodyHeight := bag.MustSP("120pt")
+	numBodyRows := 3
+	tableWidth := bag.MustSP("200pt")
+
+	// makeRow constructs a fresh HList of the given height — synthetic rows
+	// bypass buildTable so the heights are deterministic.
+	makeRow := func(h bag.ScaledPoint) *node.HList {
+		r := node.NewHList()
+		r.Width = tableWidth
+		r.Height = h
+		return r
+	}
+
+	var rowNodes []*node.HList
+	rowNodes = append(rowNodes, makeRow(headerHeight))
+	for i := 0; i < numBodyRows; i++ {
+		rowNodes = append(rowNodes, makeRow(bodyHeight))
+	}
+	for i := 0; i+1 < len(rowNodes); i++ {
+		rowNodes[i].SetNext(rowNodes[i+1])
+		rowNodes[i+1].SetPrev(rowNodes[i])
+	}
+
+	tableVL := node.NewVList()
+	tableVL.List = rowNodes[0]
+	tableVL.Width = tableWidth
+	tableVL.Height = headerHeight + bag.ScaledPoint(numBodyRows)*bodyHeight
+	buildHeaders := func() ([]*node.HList, error) {
+		return []*node.HList{makeRow(headerHeight)}, nil
+	}
+	tableVL.Attributes = node.H{
+		"_headerCount":  1,
+		"_buildHeaders": buildHeaders,
+	}
+
+	// InitPage stamped a page-background/container VList on the current
+	// page; snapshot the object count on each existing page so we only
+	// inspect placements made by outputTableRows itself.
+	existingObjCount := make([]int, len(df.Doc.Pages))
+	for i, p := range df.Doc.Pages {
+		existingObjCount[i] = len(p.Objects)
+	}
+
+	y := pd.Height - pd.MarginTop
+	yLimit := pd.MarginBottom
+	pageHasContent := false
+
+	if err := cb.outputTableRows(tableVL, buildHeaders, &y, &yLimit, &pageHasContent, &pd); err != nil {
+		t.Fatal("outputTableRows:", err)
+	}
+
+	// Sanity: a 1-header + 3 body-row table across a 150pt page must have
+	// forced at least two pages of output.
+	if len(df.Doc.Pages) < 2 {
+		t.Fatalf("expected multi-page output, got %d page(s)", len(df.Doc.Pages))
+	}
+
+	for pi, p := range df.Doc.Pages {
+		start := 0
+		if pi < len(existingObjCount) {
+			start = existingObjCount[pi]
+		}
+		for oi := start; oi < len(p.Objects); oi++ {
+			obj := p.Objects[oi]
+			vl := obj.Vlist
+			if vl == nil {
+				continue
+			}
+			h := vl.Height + vl.Depth
+			bottom := obj.Y - h
+			if bottom < pd.MarginBottom {
+				t.Errorf("page %d object %d overflows page box: y=%v h=%v bottom=%v (yLimit=%v)",
+					pi, oi, obj.Y, h, bottom, pd.MarginBottom)
+			}
+		}
 	}
 }
