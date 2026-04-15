@@ -1106,3 +1106,104 @@ func TestPageBreakInside_PaginatorHonorsCSSAttributeEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildTable_NestedTableCollapsesToCellWidth is the Task D4-repro probe
+// for the nested-table relayout hypothesis: when an outer <table> has two
+// 50%-width cells and each cell contains a nested <table> whose natural
+// width (sum of its fixed-width child columns) exceeds the outer cell
+// width, does the nested table collapse its column widths to fit the
+// parent cell?
+//
+// Scenario mirrors the Executive template's .threat-col / .threat-list
+// shape — outer cells at 50% (so 200pt on a 400pt page), inner cells at
+// a fixed 100pt × 3 = 300pt natural width. If nested-table layout honours
+// the parent cell's width constraint, every inner HList (inner table row
+// or paragraph line box inside an inner cell) has Width <= outerCellWidth.
+// If the nested table is laid out against some wider context (e.g. the
+// page/DefaultPageWidth) the inner row HList's Width exceeds outer cell
+// width and the test fails — confirming D4 as a real defect.
+//
+// This is the D4-repro artifact itself: the pass/fail outcome decides
+// whether Task D4-fix runs (fail) or is skipped (pass). Either outcome is
+// a valid completion of D4-repro.
+func TestBuildTable_NestedTableCollapsesToCellWidth(t *testing.T) {
+	df := newTestDocument(t)
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+
+	const css = `
+table.outer > tbody > tr > td { width: 50% }
+table.inner > tbody > tr > td { width: 100pt }
+`
+	if err := cb.ParseCSSString(css); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+
+	const htmlSrc = `<html><body><table class="outer"><tbody><tr>` +
+		`<td><table class="inner"><tbody><tr>` +
+		`<td>L1</td><td>L2</td><td>L3</td>` +
+		`</tr></tbody></table></td>` +
+		`<td><table class="inner"><tbody><tr>` +
+		`<td>R1</td><td>R2</td><td>R3</td>` +
+		`</tr></tbody></table></td>` +
+		`</tr></tbody></table></body></html>`
+
+	te, err := cb.HTMLToText(htmlSrc)
+	if err != nil {
+		t.Fatal("HTMLToText:", err)
+	}
+
+	pageWidth := bag.MustSP("400pt")
+	rootVL, err := cb.CreateVlist(te, pageWidth)
+	if err != nil {
+		t.Fatal("CreateVlist:", err)
+	}
+
+	// Walk the materialized VList tree. Track HList ancestor depth so we
+	// can distinguish outer rows (depth 0) from inner rows and any nested
+	// line boxes (depth >= 1).
+	var outerRows, innerRows []*node.HList
+	var walk func(n node.Node, depth int)
+	walk = func(n node.Node, depth int) {
+		for cur := n; cur != nil; cur = cur.Next() {
+			switch v := cur.(type) {
+			case *node.HList:
+				if depth == 0 {
+					outerRows = append(outerRows, v)
+				} else {
+					innerRows = append(innerRows, v)
+				}
+				walk(v.List, depth+1)
+			case *node.VList:
+				walk(v.List, depth)
+			}
+		}
+	}
+	walk(rootVL.List, 0)
+
+	if len(outerRows) == 0 {
+		t.Fatalf("no outer row HLists found — outer table did not materialize")
+	}
+	if len(innerRows) < 2 {
+		t.Fatalf("expected at least 2 inner HLists (one row per nested table), got %d", len(innerRows))
+	}
+
+	outerCellWidth := outerRows[0].Width / 2
+	if outerCellWidth <= 0 {
+		t.Fatalf("outer cell width non-positive: outer row Width=%v", outerRows[0].Width)
+	}
+
+	t.Logf("outer row Width=%v outerCellWidth=%v (limit for inner HLists)",
+		outerRows[0].Width, outerCellWidth)
+
+	for i, r := range innerRows {
+		t.Logf("inner HList %d: Width=%v", i, r.Width)
+		if r.Width > outerCellWidth {
+			t.Errorf("inner HList %d overflows outer cell: Width=%v > outerCellWidth=%v — nested table did not collapse to fit parent cell",
+				i, r.Width, outerCellWidth)
+		}
+	}
+}
