@@ -1117,11 +1117,35 @@ func TestPageBreakInside_PaginatorHonorsCSSAttributeEndToEnd(t *testing.T) {
 // Scenario mirrors the Executive template's .threat-col / .threat-list
 // shape — outer cells at 50% (so 200pt on a 400pt page), inner cells at
 // a fixed 100pt × 3 = 300pt natural width. If nested-table layout honours
-// the parent cell's width constraint, every inner HList (inner table row
-// or paragraph line box inside an inner cell) has Width <= outerCellWidth.
-// If the nested table is laid out against some wider context (e.g. the
-// page/DefaultPageWidth) the inner row HList's Width exceeds outer cell
-// width and the test fails — confirming D4 as a real defect.
+// the parent cell's width constraint, every HList nested inside the outer
+// row HList (inner table row or paragraph line box inside an inner cell)
+// has Width <= outerCellWidth. If the nested table is laid out against
+// some wider context (e.g. DefaultPageWidth) the inner row HList's Width
+// exceeds outer cell width and the test fails — confirming D4 as a real
+// defect.
+//
+// A note on "render via RenderPages" (from the Task D4-repro scope line):
+// document.RenderPages lives in the document package, which imports
+// htmlbag, so an htmlbag_test cannot call it directly. The obvious
+// substitute — cb.InitPage + cb.OutputPagesFromText — was tried and
+// discarded for this repro: the paginator unwraps nested single-child
+// VLists (outputGroupNodes peels into the outer table's row chain) and
+// then processNodeList places the outer row HList's cells as individual
+// page objects, which masks the very property the D4 probe is trying to
+// measure (the inner *row HList* width). Empirically, the paginator path
+// reports outer row Width=300 and zero HLists at the nested-table row
+// level — only cell line boxes. That is not a negative repro result, it
+// is an inspection-layer artifact.
+//
+// The faithful substitute is HTMLToText + CreateVlist on the body text,
+// which runs the identical materialization pipeline RenderPages drives
+// (buildVlistInternal → buildTable → frontend.BuildTable → FormatToVList
+// closures → nested buildVlistInternal → nested buildTable) without the
+// paginator's downstream unwrapping. The resulting VList tree preserves
+// the outer row HList with its full width (400pt) and each nested row
+// HList at its collapsed cell width (200pt) — letting the test make an
+// unambiguous assertion about whether nested tables honour parent-cell
+// width constraints, which is exactly what D4 hypothesises about.
 //
 // This is the D4-repro artifact itself: the pass/fail outcome decides
 // whether Task D4-fix runs (fail) or is skipped (pass). Either outcome is
@@ -1156,6 +1180,13 @@ table.inner > tbody > tr > td { width: 100pt }
 		t.Fatal("HTMLToText:", err)
 	}
 
+	// CreateVlist drives the same materialization path RenderPages uses:
+	// buildVlistInternal descends through html > body > table, dispatches
+	// to buildTable(outerTable, 400pt), which invokes
+	// frontend.BuildTable, which in turn fires each cell's FormatToVList
+	// closure and so recursively materializes the nested inner tables at
+	// their actual parent-cell width. All the nested-table relayout
+	// machinery D4 hypothesises about runs in this call.
 	pageWidth := bag.MustSP("400pt")
 	rootVL, err := cb.CreateVlist(te, pageWidth)
 	if err != nil {
