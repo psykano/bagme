@@ -10,6 +10,33 @@ import (
 	"github.com/boxesandglue/boxesandglue/frontend"
 )
 
+// recalcVListHeight recomputes the enclosing VList's total vertical extent
+// by walking its inner list and summing children via vlistNodeHeight,
+// recursing into nested VLists so post-construction drift is visible to the
+// ancestor. The freshly computed total is written back to vl.Height (with
+// vl.Depth zeroed) so a subsequent vlistNodeHeight(vl) call returns it.
+//
+// Scope is intentionally narrow: call this only on the pagination hot path
+// where dynamic content has materialized after the enclosing VList was
+// first built (re-rendered percentage-width SVGs, nested-table closures
+// invoked by frontend.BuildTable, re-emitted header overhead on table
+// continuation pages). It is NOT a general replacement for the running
+// height accumulation in buildVlistInternal — that path is already accurate
+// because no drift has occurred yet.
+func recalcVListHeight(vl *node.VList) bag.ScaledPoint {
+	var total bag.ScaledPoint
+	for cur := vl.List; cur != nil; cur = cur.Next() {
+		if child, ok := cur.(*node.VList); ok {
+			total += recalcVListHeight(child)
+			continue
+		}
+		total += vlistNodeHeight(cur)
+	}
+	vl.Height = total
+	vl.Depth = 0
+	return total
+}
+
 // CreateVlist builds a vlist (a vertical list) from the Text object.
 func (cb *CSSBuilder) CreateVlist(te *frontend.Text, wd bag.ScaledPoint) (*node.VList, error) {
 	vl, err := cb.buildVlistInternal(te, wd)

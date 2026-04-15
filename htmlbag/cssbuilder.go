@@ -478,6 +478,13 @@ func (cb *CSSBuilder) OutputPages(vl *node.VList) error {
 
 	for cur != nil {
 		next := cur.Next()
+		// Dynamic content (re-rendered percentage-width SVGs, nested-table
+		// closures) may have changed child heights after the enclosing
+		// VList was first built. Recompute before the fit check so we
+		// trust the freshly built node tree, not the stale cache.
+		if vl, ok := cur.(*node.VList); ok {
+			recalcVListHeight(vl)
+		}
 		h := vlistNodeHeight(cur)
 
 		// page-break-before: always — force a new page before this node
@@ -720,6 +727,11 @@ func (cb *CSSBuilder) processNodeList(head node.Node, contentWidth bag.ScaledPoi
 
 	for cur := head; cur != nil; {
 		next := cur.Next()
+		// Recompute height from the freshly built node tree before the
+		// fit check — see recalcVListHeight for scope rationale.
+		if vl, ok := cur.(*node.VList); ok {
+			recalcVListHeight(vl)
+		}
 		h := vlistNodeHeight(cur)
 
 		// Tables with header rows: unpack into individual rows so the
@@ -850,6 +862,12 @@ func (cb *CSSBuilder) outputTableRows(tableVL *node.VList, buildHeadersFn any, y
 			return fmt.Errorf("outputTableRows: iteration limit %d exceeded (possible infinite loop)", maxIterations)
 		}
 
+		// Row cells may contain re-rendered SVGs or nested-table closure
+		// output whose heights weren't propagated to the row wrapper.
+		// Recompute before the fit check — see recalcVListHeight.
+		if vl, ok := row.(*node.VList); ok {
+			recalcVListHeight(vl)
+		}
 		h := vlistNodeHeight(row)
 
 		// Check if row fits on current page.

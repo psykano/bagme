@@ -109,3 +109,76 @@ func TestBuildTableInBorderedContainer(t *testing.T) {
 		t.Errorf("table VList width = %v, exceeds content area %v", tableVL.Width, expectedContentWidth)
 	}
 }
+
+// TestRecalcVListHeight verifies that recalcVListHeight recomputes an
+// enclosing VList's Height+Depth by summing children via vlistNodeHeight,
+// overwriting any stale cached value that was captured before dynamic
+// content (e.g. a percentage-width SVG re-rendered at its real container
+// width) changed a child's height. This is the height-propagation helper
+// the pagination fit check relies on.
+func TestRecalcVListHeight(t *testing.T) {
+	vl := node.NewVList()
+
+	r1 := node.NewRule()
+	r1.Height = bag.MustSP("10pt")
+	r2 := node.NewRule()
+	r2.Height = bag.MustSP("20pt")
+
+	vl.List = node.InsertAfter(vl.List, node.Tail(vl.List), r1)
+	vl.List = node.InsertAfter(vl.List, node.Tail(vl.List), r2)
+	// Correct cached height at construction time.
+	vl.Height = bag.MustSP("30pt")
+	vl.Depth = 0
+
+	// Simulate dynamic-content drift: the second child grows to 50pt after
+	// a post-construction re-layout (e.g. resolveSVGWidths swapping in a
+	// re-rendered SVG, or a nested table closure producing a taller VList).
+	r2.Height = bag.MustSP("50pt")
+
+	// vlistNodeHeight still reads the stale cached value.
+	if got := vlistNodeHeight(vl); got != bag.MustSP("30pt") {
+		t.Fatalf("pre-recalc vlistNodeHeight = %v, want 30pt (stale cached value)", got)
+	}
+
+	got := recalcVListHeight(vl)
+	want := bag.MustSP("60pt") // 10pt + 50pt
+	if got != want {
+		t.Errorf("recalcVListHeight returned %v, want %v", got, want)
+	}
+	if vlistNodeHeight(vl) != want {
+		t.Errorf("post-recalc vlistNodeHeight = %v, want %v (should read the freshly written value)", vlistNodeHeight(vl), want)
+	}
+}
+
+// TestRecalcVListHeight_NestedVList verifies the helper descends into child
+// VLists so that drift inside a nested VList is reflected in the ancestor's
+// recomputed total. This matches the real-world case where a mixed-content
+// cell's wrapper VList holds a heading + SVG child whose height was stale.
+func TestRecalcVListHeight_NestedVList(t *testing.T) {
+	// Inner VList with one rule that will grow.
+	inner := node.NewVList()
+	innerRule := node.NewRule()
+	innerRule.Height = bag.MustSP("10pt")
+	inner.List = node.InsertAfter(inner.List, node.Tail(inner.List), innerRule)
+	inner.Height = bag.MustSP("10pt")
+
+	// Outer VList with a sibling rule plus the inner VList.
+	outer := node.NewVList()
+	sibling := node.NewRule()
+	sibling.Height = bag.MustSP("15pt")
+	outer.List = node.InsertAfter(outer.List, node.Tail(outer.List), sibling)
+	outer.List = node.InsertAfter(outer.List, node.Tail(outer.List), inner)
+	outer.Height = bag.MustSP("25pt") // 15pt + 10pt
+
+	// Inner rule grows after construction — outer.Height is now doubly stale.
+	innerRule.Height = bag.MustSP("40pt")
+
+	got := recalcVListHeight(outer)
+	want := bag.MustSP("55pt") // 15pt + 40pt
+	if got != want {
+		t.Errorf("recalcVListHeight returned %v, want %v", got, want)
+	}
+	if inner.Height != bag.MustSP("40pt") {
+		t.Errorf("nested inner VList Height = %v, want 40pt (should have been updated)", inner.Height)
+	}
+}
