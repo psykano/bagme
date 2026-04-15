@@ -330,6 +330,17 @@ func (cb *CSSBuilder) buildVlistInternal(te *frontend.Text, wd bag.ScaledPoint) 
 		delete(te.Settings, settingPageBreakInside)
 	}
 
+	// Task C / D3: materialize any deferred percentage-width inline SVGs
+	// against the actual contentWidth reaching this leaf. Without this,
+	// block-level SVGs (e.g. <div><svg style="width:100%"/></div>) stay
+	// frozen at their placeholder natural size from collectHorizontalNodes
+	// and ignore the real container they render inside. The cell path
+	// runs its own resolveSVGWidths inside buildTD's FormatToVList
+	// closure at the final cell width and is unaffected by this call
+	// (materializeSVG is idempotent — it rewrites Width/Height against
+	// the given container each time it runs).
+	resolveSVGWidths(te.Items, contentWidth, cb.frontend)
+
 	// FormatParagraph -> Mknodes handles SettingPrepend (e.g., bullet points)
 	vl, _, err := cb.frontend.FormatParagraph(te, contentWidth)
 	if err != nil {

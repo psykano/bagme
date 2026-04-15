@@ -1092,8 +1092,19 @@ func collectHorizontalNodes(te *frontend.Text, item *HTMLItem, ss StylesStack, c
 				vl := strings.TrimSpace(strings.ToLower(v))
 				if p, ok2 := strings.CutSuffix(vl, "%"); ok2 {
 					if f, err := strconv.ParseFloat(p, 64); err == nil && f > 0 {
+						// Defer percentage-width sizing to the consumer
+						// (vlistbuilder leaf branch for block path,
+						// buildTD FormatToVList closure for cell path).
+						// Leaving wd=0 makes CreateSVGNodeFromDocument
+						// fall back to natural SVG dimensions as the
+						// placeholder; materializeSVG then overwrites
+						// Width/Height when the real container width
+						// is known. Resolving against DefaultPageWidth
+						// here produces wrong sizes whenever the real
+						// container is narrower (e.g. a 50% <td> or a
+						// block contentWidth trimmed by padding), so
+						// the resolve is deferred unconditionally.
 						widthPct = f
-						wd = bag.ScaledPoint(float64(df.Doc.DefaultPageWidth) * f / 100)
 					}
 				} else if isCSSLength(v) {
 					wd = ParseRelativeSize(v, cs.Fontsize, defaultFontsize)

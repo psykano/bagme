@@ -9,6 +9,7 @@ import (
 	"github.com/boxesandglue/boxesandglue/backend/bag"
 	"github.com/boxesandglue/boxesandglue/backend/node"
 	"github.com/boxesandglue/boxesandglue/frontend"
+	"github.com/boxesandglue/csshtml"
 	"github.com/boxesandglue/svgreader"
 	"golang.org/x/net/html"
 )
@@ -442,10 +443,18 @@ func TestSVGInTableCell(t *testing.T) {
 		t.Fatalf("te.Items[0] is %T, want *node.VList", te.Items[0])
 	}
 
-	// Initially rendered at 50% of DefaultPageWidth (400pt) = 200pt.
-	initialWant := bag.MustSP("200pt")
+	// Task C / D3: percentage-width SVGs are sized lazily. At
+	// construction time the wrapper uses the SVG's natural dimensions
+	// (derived from viewBox — 100×100 here) as a placeholder; the
+	// real size is resolved later by resolveSVGWidths / materializeSVG
+	// at the consumer's known container width. Before Task C this
+	// assertion read 200pt (50% of DefaultPageWidth=400pt) because the
+	// construction path eagerly resolved against page width; it now
+	// reads the natural viewBox width instead, which is also what
+	// CreateSVGNodeFromDocument returns when called with wd=0, ht=0.
+	initialWant := bag.MustSP("100pt")
 	if vl.Width != initialWant {
-		t.Fatalf("initial VList.Width = %v pt, want %v pt", vl.Width.ToPT(), initialWant.ToPT())
+		t.Fatalf("initial VList.Width = %v pt, want %v pt (natural viewBox width; Task C defers percentage resolution to the consumer)", vl.Width.ToPT(), initialWant.ToPT())
 	}
 
 	// Verify percentage metadata was stored.
@@ -648,5 +657,113 @@ func TestIsCSSLength(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("isCSSLength(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+// TestInlineSVG_PercentWidth_ResolvedAgainstContainer is the Task C TDD
+// anchor (D3, Section C). It asserts the new deferred-sizing contract:
+// a percentage-width inline SVG must be sized against the real container
+// width it ends up inside, not against df.Doc.DefaultPageWidth.
+//
+// The PRD test wording targets a 50% <td>; that path already worked
+// before Task C because buildTD's FormatToVList closure calls
+// resolveSVGWidths at the final cell width. The path this test exercises
+// instead is the non-table block path — a <div><svg style="width:100%"/>
+// </div> flows through buildVlistInternal's leaf branch into
+// FormatParagraph without ever touching buildTD, and therefore never
+// re-materialized its SVG. That is the direct cause of the summary-page
+// Data Integrity donut and any other block-level percentage SVG
+// rendering at page width instead of the container it lives inside.
+//
+// The test uses a <svg style="width:100%"> rather than 50% specifically
+// because collectHorizontalNodes wraps <svg> in an enclosing
+// *frontend.Text (svgTe) that inherits the same width style via
+// ApplySettings. buildVlistInternal re-applies that percentage to compute
+// the wrapper's own width, so a 50%-wide SVG inside a 400pt container
+// would end up at 100pt (50% of 50%) and blur the very thing this test
+// is checking. Using 100% keeps the wrapper width equal to the container
+// and lets the assertion speak unambiguously about the SVG itself.
+//
+// Failing mode before Task C: construction caches
+// wd = DefaultPageWidth * 100 / 100 = DefaultPageWidth (800pt in this
+// test). The block path never calls resolveSVGWidths, so the final SVG
+// VList width stays at 800pt — not the 400pt the 400pt container should
+// yield.
+//
+// Passing mode after Task C: construction stores svg-width-pct only and
+// leaves the SVG at its natural (viewBox) dimensions; the leaf branch of
+// buildVlistInternal materializes the SVG against contentWidth via
+// resolveSVGWidths right before FormatParagraph runs, so the final width
+// matches contentWidth * widthPct / 100 = 400pt.
+func TestInlineSVG_PercentWidth_ResolvedAgainstContainer(t *testing.T) {
+	df := newTestDocument(t)
+	// DefaultPageWidth is intentionally set much larger than the
+	// CreateVlist container width below so that the two values cannot
+	// coincide — a passing final width must prove the SVG was sized
+	// against the container, not against DefaultPageWidth.
+	df.Doc.DefaultPageWidth = bag.MustSP("800pt")
+
+	cs := csshtml.NewCSSParserWithDefaults()
+	cb, err := New(df, cs)
+	if err != nil {
+		t.Fatal("New:", err)
+	}
+	if err := cb.ParseCSSString(`@page { size: 800pt 600pt; margin: 0 }`); err != nil {
+		t.Fatal("ParseCSSString:", err)
+	}
+
+	const htmlSrc = `<html><body><div>` +
+		`<svg style="width:100%" viewBox="0 0 100 100"><rect x="0" y="0" width="100" height="100" fill="red"/></svg>` +
+		`</div></body></html>`
+
+	te, err := cb.HTMLToText(htmlSrc)
+	if err != nil {
+		t.Fatal("HTMLToText:", err)
+	}
+
+	containerWidth := bag.MustSP("400pt")
+	rootVL, err := cb.CreateVlist(te, containerWidth)
+	if err != nil {
+		t.Fatal("CreateVlist:", err)
+	}
+
+	// Walk the result tree and locate the first node.VList carrying the
+	// inline-svg origin — that is the wrapper collectHorizontalNodes
+	// produced for <svg> and whose width the fix updates.
+	var svgVL *node.VList
+	var walk func(n node.Node)
+	walk = func(n node.Node) {
+		for cur := n; cur != nil; cur = cur.Next() {
+			switch v := cur.(type) {
+			case *node.VList:
+				if svgVL == nil && v.Attributes != nil {
+					if origin, _ := v.Attributes["origin"].(string); origin == "inline-svg" {
+						svgVL = v
+						return
+					}
+				}
+				walk(v.List)
+			case *node.HList:
+				walk(v.List)
+			}
+		}
+	}
+	walk(rootVL.List)
+
+	if svgVL == nil {
+		t.Fatal("no inline-svg VList found in CreateVlist output — " +
+			"block path did not materialize the SVG at all")
+	}
+
+	// The div sits at the top level of the body with no borders or
+	// padding, so the effective contentWidth reaching the leaf branch
+	// equals containerWidth. A 100% SVG inside a 400pt container should
+	// be 400pt.
+	want := bag.MustSP("400pt")
+	if svgVL.Width != want {
+		t.Errorf("inline SVG final Width = %v pt, want %v pt (100%% of 400pt container); "+
+			"if Width == 800pt the SVG is still sized against DefaultPageWidth (800pt × 100%%) — "+
+			"block path does not re-materialize percentage SVGs against the real container",
+			svgVL.Width.ToPT(), want.ToPT())
 	}
 }

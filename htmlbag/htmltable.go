@@ -600,39 +600,68 @@ func (cb *CSSBuilder) tagTable(tableVL *node.VList, tbl *frontend.Table) {
 	}
 }
 
-// resolveSVGWidths walks a slice of frontend items and replaces any
-// percentage-width SVG VLists with versions rendered at the correct container
-// width. SVG VLists created during collectHorizontalNodes use DefaultPageWidth
-// for percentage resolution; this function re-renders them using the actual
-// cell/container width determined at layout time.
+// materializeSVG re-renders a deferred inline-SVG wrapper VList against a
+// resolved container width. It reads the svg-width-pct / svg-doc /
+// svg-height / svg-text-renderer attributes stored at construction time by
+// collectHorizontalNodes, re-invokes CreateSVGNodeFromDocument at
+// containerWidth * pct / 100 (preserving aspect ratio via the stored
+// svg-height or the document's natural height), and rewrites vl in place —
+// vl.List, vl.Width, vl.Height, and vl.Depth all point at the freshly
+// rendered svg rule wrapper. The stored deferred-sizing attributes are
+// preserved so subsequent passes can re-materialize against a different
+// container width if needed. Returns true if the VList carried the
+// svg-width-pct marker and was rewritten; false otherwise (callers should
+// leave the VList alone).
+//
+// This is the shared helper used by both the table-cell path
+// (resolveSVGWidths → buildTD's FormatToVList closure, where it sees the
+// final cell width) and the block path (vlistbuilder's leaf branch, where
+// it sees the enclosing block's contentWidth right before FormatParagraph
+// runs). Before Task C, the table-cell path worked via a bespoke loop
+// inside resolveSVGWidths and the block path did not exist at all, so
+// block-level percentage SVGs stayed frozen at their construction-time
+// DefaultPageWidth-scaled size.
+func materializeSVG(vl *node.VList, containerWidth bag.ScaledPoint, df *frontend.Document) bool {
+	if vl == nil || vl.Attributes == nil {
+		return false
+	}
+	pct, ok := vl.Attributes["svg-width-pct"].(float64)
+	if !ok {
+		return false
+	}
+	svgDoc, ok := vl.Attributes["svg-doc"].(*svgreader.Document)
+	if !ok {
+		return false
+	}
+	ht, _ := vl.Attributes["svg-height"].(bag.ScaledPoint)
+	tr, _ := vl.Attributes["svg-text-renderer"].(*frontend.SVGTextRenderer)
+	if tr == nil {
+		tr = newSVGTextRenderer(df)
+	}
+	newWd := bag.ScaledPoint(float64(containerWidth) * pct / 100)
+	svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, newWd, ht, tr)
+	newVL := node.Vpack(svgNode)
+	vl.List = newVL.List
+	vl.Width = newVL.Width
+	vl.Height = newVL.Height
+	vl.Depth = newVL.Depth
+	return true
+}
+
+// resolveSVGWidths walks a slice of frontend items and materializes any
+// percentage-width SVG VLists against the given container width via
+// materializeSVG. Recurses into nested *frontend.Text items so SVGs inside
+// wrappers (e.g. a <div> inside a <td>) are reached.
+//
+// Before Task C this was the only path that ever re-sized deferred SVGs
+// and it was called exclusively from buildTD's FormatToVList closure. The
+// block path (vlistbuilder's leaf branch) now calls it as well so
+// non-table block contexts pick up container-width-resolved sizes.
 func resolveSVGWidths(items []any, containerWidth bag.ScaledPoint, df *frontend.Document) {
-	for i, itm := range items {
+	for _, itm := range items {
 		switch v := itm.(type) {
 		case *node.VList:
-			pct, ok := v.Attributes["svg-width-pct"].(float64)
-			if !ok {
-				continue
-			}
-			svgDoc, ok := v.Attributes["svg-doc"].(*svgreader.Document)
-			if !ok {
-				continue
-			}
-			ht, _ := v.Attributes["svg-height"].(bag.ScaledPoint)
-			tr, _ := v.Attributes["svg-text-renderer"].(*frontend.SVGTextRenderer)
-			if tr == nil {
-				tr = newSVGTextRenderer(df)
-			}
-			newWd := bag.ScaledPoint(float64(containerWidth) * pct / 100)
-			svgNode := df.Doc.CreateSVGNodeFromDocument(svgDoc, newWd, ht, tr)
-			newVL := node.Vpack(svgNode)
-			newVL.Attributes = node.H{
-				"origin":              "inline-svg",
-				"svg-width-pct":       pct,
-				"svg-doc":             svgDoc,
-				"svg-height":          ht,
-				"svg-text-renderer":   tr,
-			}
-			items[i] = newVL
+			materializeSVG(v, containerWidth, df)
 		case *frontend.Text:
 			resolveSVGWidths(v.Items, containerWidth, df)
 		}
